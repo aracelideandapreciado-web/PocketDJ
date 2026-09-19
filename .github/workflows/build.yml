@@ -1,55 +1,36 @@
-name: Build Pocket DJ APK
+name: Build PocketDJ
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
+      - master
+
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    name: Build Android APK
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v5
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.13'
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
 
-      - name: Check Android SDK
-        run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          ls -la "$ANDROID_HOME"
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --version
-
-      - name: Accept Android licenses
-        run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
-
-      - name: Install Android SDK
-        run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
-      - name: Build APK
-        run: |
-          gradle assembleDebug --no-daemon --stacktrace
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: PocketDJ-debug
           path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
