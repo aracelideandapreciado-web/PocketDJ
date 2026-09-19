@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.pocketdj"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.pocketdj"
@@ -36,6 +36,5 @@ dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")
-
     implementation("androidx.media3:media3-exoplayer:1.9.1")
 }
