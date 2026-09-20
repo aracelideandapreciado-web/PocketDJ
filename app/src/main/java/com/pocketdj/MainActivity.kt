@@ -1253,6 +1253,30 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            var cueHoldStartedPlayback = false
+
+            val cueHoldRunnable = object : Runnable {
+                override fun run() {
+                    if (!cue.isPressed || deckLocked) return
+
+                    if (!player.isPlaying) {
+                        // Hold while stopped/paused: play from the cue point.
+                        cueHeld = true
+                        cueHoldStartedPlayback = true
+                        player.seekTo(cuePosition)
+                        player.play()
+                        play.text = "PAUSE"
+                        cue.text = "CUE ▶"
+                    } else {
+                        // Hold while playing: set a new cue point without stopping.
+                        cueHeld = true
+                        cueHoldStartedPlayback = false
+                        cuePosition = player.currentPosition.coerceAtLeast(0L)
+                        cue.text = "CUE SET"
+                    }
+                }
+            }
+
             cue.setOnTouchListener { _, event ->
 
                 if (deckLocked) return@setOnTouchListener true
@@ -1261,34 +1285,19 @@ class MainActivity : AppCompatActivity() {
 
                     MotionEvent.ACTION_DOWN -> {
 
+                        cue.removeCallbacks(cueHoldRunnable)
+                        cueHeld = false
+                        cueHoldStartedPlayback = false
+
                         if (!player.isPlaying) {
-                            // CDJ-style: while stopped/paused, CUE sets the cue point.
+                            // Tap while stopped/paused: set the cue point.
                             cuePosition =
                                 player.currentPosition.coerceAtLeast(0L)
-
                             cue.text = "CUE SET"
-                            cueHeld = false
-
-                        } else {
-                            // CDJ-style: a press while playing immediately returns
-                            // to the cue point and pauses there.
-                            player.pause()
-                            player.seekTo(cuePosition)
-                            play.text = "PLAY"
-
-                            cueHeld = false
-
-                            // Holding CUE starts playback from the cue point.
-                            cue.postDelayed({
-                                if (cue.isPressed && !deckLocked) {
-                                    cueHeld = true
-                                    player.seekTo(cuePosition)
-                                    player.play()
-                                    play.text = "PAUSE"
-                                    cue.text = "CUE ▶"
-                                }
-                            }, 180L)
                         }
+
+                        // A hold has a different CDJ-style action.
+                        cue.postDelayed(cueHoldRunnable, 250L)
 
                         true
                     }
@@ -1296,19 +1305,27 @@ class MainActivity : AppCompatActivity() {
                     MotionEvent.ACTION_UP,
                     MotionEvent.ACTION_CANCEL -> {
 
-                        cue.removeCallbacksAndMessages(null)
+                        cue.removeCallbacks(cueHoldRunnable)
 
                         if (cueHeld) {
-                            // Release after holding: stop and return to the cue point.
-                            cueHeld = false
-                            player.pause()
+                            if (cueHoldStartedPlayback) {
+                                // Release after holding from stopped/paused:
+                                // stop and return to the cue point.
+                                cueHeld = false
+                                player.pause()
+                                player.seekTo(cuePosition)
+                                play.text = "PLAY"
+                            } else {
+                                // Hold while playing only creates a new cue.
+                                // Leave playback running.
+                                cueHeld = false
+                            }
+                        } else if (player.isPlaying) {
+                            // Short press while playing: return to the last cue
+                            // and continue playing.
                             player.seekTo(cuePosition)
-                            play.text = "PLAY"
-                        } else {
-                            // Short press while playing: remain stopped at the cue point.
-                            player.pause()
-                            player.seekTo(cuePosition)
-                            play.text = "PLAY"
+                            player.play()
+                            play.text = "PAUSE"
                         }
 
                         cue.text = "CUE"
