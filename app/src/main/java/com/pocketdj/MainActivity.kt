@@ -205,6 +205,7 @@ class MainActivity : AppCompatActivity() {
         private var deckLocked = false
         private var reverseMode = false
         private var cueHeld = false
+        private var cueTouchDown = false
         private val reverseHandler = Handler(Looper.getMainLooper())
         private val reverseStep = object : Runnable {
             override fun run() {
@@ -1257,7 +1258,7 @@ class MainActivity : AppCompatActivity() {
 
             val cueHoldRunnable = object : Runnable {
                 override fun run() {
-                    if (!cue.isPressed || deckLocked) return
+                    if (!cueTouchDown || deckLocked) return
 
                     if (!player.isPlaying) {
                         // Hold while stopped/paused: play from the cue point.
@@ -1268,7 +1269,8 @@ class MainActivity : AppCompatActivity() {
                         play.text = "PAUSE"
                         cue.text = "CUE ▶"
                     } else {
-                        // Hold while playing: set a new cue point without stopping.
+                        // Hold while playing: create a new cue point here.
+                        // Playback continues and release does NOT jump back.
                         cueHeld = true
                         cueHoldStartedPlayback = false
                         cuePosition = player.currentPosition.coerceAtLeast(0L)
@@ -1285,6 +1287,7 @@ class MainActivity : AppCompatActivity() {
 
                     MotionEvent.ACTION_DOWN -> {
 
+                        cueTouchDown = true
                         cue.removeCallbacks(cueHoldRunnable)
                         cueHeld = false
                         cueHoldStartedPlayback = false
@@ -1296,7 +1299,7 @@ class MainActivity : AppCompatActivity() {
                             cue.text = "CUE SET"
                         }
 
-                        // A hold has a different CDJ-style action.
+                        // A hold is recognized after 250 ms.
                         cue.postDelayed(cueHoldRunnable, 250L)
 
                         true
@@ -1305,22 +1308,24 @@ class MainActivity : AppCompatActivity() {
                     MotionEvent.ACTION_UP,
                     MotionEvent.ACTION_CANCEL -> {
 
+                        cueTouchDown = false
                         cue.removeCallbacks(cueHoldRunnable)
 
                         if (cueHeld) {
+
                             if (cueHoldStartedPlayback) {
-                                // Release after holding from stopped/paused:
-                                // stop and return to the cue point.
-                                cueHeld = false
+                                // Hold from stopped/paused: release stops and
+                                // returns to the cue point.
                                 player.pause()
                                 player.seekTo(cuePosition)
                                 play.text = "PLAY"
                             } else {
-                                // Hold while playing only creates a new cue.
-                                // Leave playback running.
-                                cueHeld = false
+                                // Hold while playing: keep playing at the new
+                                // cue point. Do NOT seek on release.
                             }
+
                         } else if (player.isPlaying) {
+
                             // Short press while playing: return to the last cue
                             // and continue playing.
                             player.seekTo(cuePosition)
@@ -1328,6 +1333,8 @@ class MainActivity : AppCompatActivity() {
                             play.text = "PAUSE"
                         }
 
+                        cueHeld = false
+                        cueHoldStartedPlayback = false
                         cue.text = "CUE"
                         true
                     }
