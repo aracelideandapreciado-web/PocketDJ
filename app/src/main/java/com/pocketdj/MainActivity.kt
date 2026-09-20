@@ -206,6 +206,9 @@ class MainActivity : AppCompatActivity() {
         private val pitchReset =
             Button(this@MainActivity)
 
+        private val pitchPercent =
+            TextView(this@MainActivity)
+
         private val picker =
             registerForActivityResult(
                 ActivityResultContracts.OpenDocument()
@@ -1365,17 +1368,15 @@ class MainActivity : AppCompatActivity() {
 
             panel.addView(pitchRow)
 
-            val pitchRange =
-                TextView(this@MainActivity).apply {
-                    text =
-                        "0.50x          1.00x          1.50x"
-                    textSize = 9f
-                    gravity = Gravity.CENTER
-                    setTextColor(Color.GRAY)
-                }
+            pitchPercent.apply {
+                text = "0%"
+                textSize = 10f
+                gravity = Gravity.CENTER
+                setTextColor(Color.GRAY)
+            }
 
             panel.addView(
-                pitchRange,
+                pitchPercent,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     17
@@ -1554,6 +1555,12 @@ class MainActivity : AppCompatActivity() {
                         baseSpeed + bendAmount
                     )
                 )
+
+            val percent =
+                ((finalSpeed - 1f) * 100f).roundToInt()
+
+            pitchPercent.text =
+                if (percent > 0) "+${percent}%" else "${percent}%"
 
             player.setPlaybackParameters(
                 PlaybackParameters(
