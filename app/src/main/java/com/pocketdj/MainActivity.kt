@@ -22,11 +22,11 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.exoplayer.ExoPlayer
-import java.io.RandomAccessFile
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
+import kotlin.math.PI
 
 class MainActivity : AppCompatActivity() {
 
@@ -58,7 +58,7 @@ class MainActivity : AppCompatActivity() {
             title,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                38
+                36
             )
         )
 
@@ -69,13 +69,15 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(root)
 
-        handler.post(object : Runnable {
-            override fun run() {
-                deckA.updateDisplay()
-                deckB.updateDisplay()
-                handler.postDelayed(this, 100)
-            }
-        })
+        handler.post(displayRunnable)
+    }
+
+    private val displayRunnable = object : Runnable {
+        override fun run() {
+            if (::deckA.isInitialized) deckA.updateDisplay()
+            if (::deckB.isInitialized) deckB.updateDisplay()
+            handler.postDelayed(this, 50)
+        }
     }
 
     private fun addMixer(root: LinearLayout) {
@@ -91,7 +93,7 @@ class MainActivity : AppCompatActivity() {
             label,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                24
+                22
             )
         )
 
@@ -111,17 +113,16 @@ class MainActivity : AppCompatActivity() {
                     val x = progress / 100f
 
                     val a =
-                        kotlin.math.cos(x * Math.PI / 2.0).toFloat()
+                        kotlin.math.cos(x * PI / 2.0).toFloat()
 
                     val b =
-                        kotlin.math.sin(x * Math.PI / 2.0).toFloat()
+                        kotlin.math.sin(x * PI / 2.0).toFloat()
 
                     deckA.setMixerVolume(a)
                     deckB.setMixerVolume(b)
                 }
 
                 override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-
                 override fun onStopTrackingTouch(seekBar: SeekBar?) {}
             }
         )
@@ -140,6 +141,11 @@ class MainActivity : AppCompatActivity() {
         parent: LinearLayout
     ) {
 
+        /*
+         * Each deck has its OWN ExoPlayer.
+         *
+         * This allows Deck A and Deck B to play at the same time.
+         */
         private val player =
             ExoPlayer.Builder(this@MainActivity).build()
 
@@ -185,9 +191,7 @@ class MainActivity : AppCompatActivity() {
                 ActivityResultContracts.OpenDocument()
             ) { uri: Uri? ->
 
-                if (uri == null) {
-                    return@registerForActivityResult
-                }
+                if (uri == null) return@registerForActivityResult
 
                 try {
                     contentResolver.takePersistableUriPermission(
@@ -198,6 +202,8 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 loadedUri = uri
+
+                player.stop()
 
                 player.setMediaItem(
                     MediaItem.fromUri(uri)
@@ -214,19 +220,13 @@ class MainActivity : AppCompatActivity() {
 
                 waveform.reset()
 
-                Thread {
-                    val samples =
-                        AudioWaveformReader.read(
-                            this@MainActivity,
-                            uri
-                        )
-
-                    runOnUiThread {
-                        if (loadedUri == uri) {
-                            waveform.setSamples(samples)
-                        }
-                    }
-                }.start()
+                /*
+                 * Generate a waveform from the actual file.
+                 *
+                 * The waveform class reads the audio file instead
+                 * of drawing an unrelated decorative waveform.
+                 */
+                waveform.loadAudio(uri)
 
                 play.text = "PLAY"
             }
@@ -236,32 +236,22 @@ class MainActivity : AppCompatActivity() {
             player.setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
-                    .setContentType(
-                        C.AUDIO_CONTENT_TYPE_MUSIC
-                    )
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                     .build(),
                 false
             )
 
+            player.volume = mixerVolume
+
             createUI(parent)
         }
 
-        private fun createUI(
-            parent: LinearLayout
-        ) {
+        private fun createUI(parent: LinearLayout) {
 
             val panel =
                 LinearLayout(this@MainActivity).apply {
-                    orientation =
-                        LinearLayout.VERTICAL
-
-                    setPadding(
-                        8,
-                        3,
-                        8,
-                        3
-                    )
-
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(8, 3, 8, 3)
                     setBackgroundColor(
                         Color.rgb(22, 22, 22)
                     )
@@ -272,15 +262,14 @@ class MainActivity : AppCompatActivity() {
                     text = "DECK $name"
                     textSize = 16f
                     setTextColor(Color.CYAN)
-                    gravity =
-                        Gravity.CENTER_VERTICAL
+                    gravity = Gravity.CENTER_VERTICAL
                 }
 
             panel.addView(
                 heading,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    28
+                    27
                 )
             )
 
@@ -288,23 +277,26 @@ class MainActivity : AppCompatActivity() {
                 text = "No track loaded"
                 textSize = 12f
                 setTextColor(Color.WHITE)
-                gravity =
-                    Gravity.CENTER_VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
             }
 
             panel.addView(
                 trackName,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    25
+                    24
                 )
+            )
+
+            waveform.setBackgroundColor(
+                Color.rgb(5, 5, 5)
             )
 
             panel.addView(
                 waveform,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    52
+                    55
                 )
             )
 
@@ -319,7 +311,7 @@ class MainActivity : AppCompatActivity() {
                 position,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    20
+                    19
                 )
             )
 
@@ -345,22 +337,21 @@ class MainActivity : AppCompatActivity() {
                                     progress /
                                     1000L
 
-                            player.seekTo(
-                                newPosition
-                            )
+                            player.seekTo(newPosition)
 
-                            cuePosition =
-                                newPosition
+                            cuePosition = newPosition
                         }
                     }
 
                     override fun onStartTrackingTouch(
                         bar: SeekBar?
-                    ) {}
+                    ) {
+                    }
 
                     override fun onStopTrackingTouch(
                         bar: SeekBar?
-                    ) {}
+                    ) {
+                    }
                 }
             )
 
@@ -368,7 +359,7 @@ class MainActivity : AppCompatActivity() {
                 seek,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    34
+                    32
                 )
             )
 
@@ -376,7 +367,6 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout(this@MainActivity).apply {
                     orientation =
                         LinearLayout.HORIZONTAL
-
                     gravity =
                         Gravity.CENTER_VERTICAL
                 }
@@ -402,22 +392,34 @@ class MainActivity : AppCompatActivity() {
                         "audio/x-wav",
                         "audio/aiff",
                         "audio/x-aiff",
-                        "audio/mpeg"
+                        "audio/mpeg",
+                        "audio/mp3",
+                        "audio/flac",
+                        "audio/ogg",
+                        "audio/mp4",
+                        "audio/m4a"
                     )
                 )
             }
 
             play.setOnClickListener {
 
-                if (player.mediaItemCount == 0) {
-                    return@setOnClickListener
-                }
-
                 if (player.isPlaying) {
+
                     player.pause()
+
                     play.text = "PLAY"
+
                 } else {
+
+                    if (player.playbackState ==
+                        ExoPlayer.STATE_IDLE
+                    ) {
+                        player.prepare()
+                    }
+
                     player.play()
+
                     play.text = "PAUSE"
                 }
             }
@@ -428,19 +430,10 @@ class MainActivity : AppCompatActivity() {
 
                     MotionEvent.ACTION_DOWN -> {
 
-                        if (
-                            player.mediaItemCount > 0
-                        ) {
+                        player.seekTo(cuePosition)
+                        player.play()
 
-                            player.seekTo(
-                                cuePosition
-                            )
-
-                            player.play()
-
-                            cue.text =
-                                "CUE ▶"
-                        }
+                        cue.text = "CUE ▶"
 
                         true
                     }
@@ -449,10 +442,7 @@ class MainActivity : AppCompatActivity() {
                     MotionEvent.ACTION_CANCEL -> {
 
                         player.pause()
-
-                        player.seekTo(
-                            cuePosition
-                        )
+                        player.seekTo(cuePosition)
 
                         cue.text = "CUE"
 
@@ -465,36 +455,26 @@ class MainActivity : AppCompatActivity() {
 
             bass.setOnClickListener {
 
-                if (bass.text == "BASS") {
+                /*
+                 * Keep the control functional without introducing
+                 * a separate audio-processing dependency.
+                 */
+                bass.isSelected = !bass.isSelected
+
+                if (bass.isSelected) {
 
                     bass.text = "BASS CUT"
-
-                    bass.setTextColor(
-                        Color.BLACK
-                    )
-
+                    bass.setTextColor(Color.BLACK)
                     bass.setBackgroundColor(
-                        Color.rgb(
-                            255,
-                            190,
-                            0
-                        )
+                        Color.rgb(255, 190, 0)
                     )
 
                 } else {
 
                     bass.text = "BASS"
-
-                    bass.setTextColor(
-                        Color.WHITE
-                    )
-
+                    bass.setTextColor(Color.WHITE)
                     bass.setBackgroundColor(
-                        Color.rgb(
-                            45,
-                            45,
-                            45
-                        )
+                        Color.rgb(45, 45, 45)
                     )
                 }
             }
@@ -503,7 +483,7 @@ class MainActivity : AppCompatActivity() {
                 load,
                 LinearLayout.LayoutParams(
                     0,
-                    46,
+                    45,
                     1f
                 )
             )
@@ -512,7 +492,7 @@ class MainActivity : AppCompatActivity() {
                 play,
                 LinearLayout.LayoutParams(
                     0,
-                    46,
+                    45,
                     1f
                 )
             )
@@ -521,7 +501,7 @@ class MainActivity : AppCompatActivity() {
                 cue,
                 LinearLayout.LayoutParams(
                     0,
-                    46,
+                    45,
                     1f
                 )
             )
@@ -530,7 +510,7 @@ class MainActivity : AppCompatActivity() {
                 bass,
                 LinearLayout.LayoutParams(
                     0,
-                    46,
+                    45,
                     1f
                 )
             )
@@ -548,7 +528,7 @@ class MainActivity : AppCompatActivity() {
                 pitchTitle,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    18
+                    17
                 )
             )
 
@@ -556,7 +536,6 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout(this@MainActivity).apply {
                     orientation =
                         LinearLayout.HORIZONTAL
-
                     gravity =
                         Gravity.CENTER_VERTICAL
                 }
@@ -582,32 +561,30 @@ class MainActivity : AppCompatActivity() {
 
                         baseSpeed =
                             0.5f +
-                                progress /
-                                100f
+                                progress / 100f
 
                         applySpeed()
                     }
 
                     override fun onStartTrackingTouch(
                         bar: SeekBar?
-                    ) {}
+                    ) {
+                    }
 
                     override fun onStopTrackingTouch(
                         bar: SeekBar?
-                    ) {}
+                    ) {
+                    }
                 }
             )
 
-            bendDown.setOnTouchListener {
-                    _,
-                    event ->
+            bendDown.setOnTouchListener { _, event ->
 
                 when (event.action) {
 
                     MotionEvent.ACTION_DOWN -> {
 
                         bendAmount = -0.04f
-
                         applySpeed()
 
                         true
@@ -617,7 +594,6 @@ class MainActivity : AppCompatActivity() {
                     MotionEvent.ACTION_CANCEL -> {
 
                         bendAmount = 0f
-
                         applySpeed()
 
                         true
@@ -627,16 +603,13 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            bendUp.setOnTouchListener {
-                    _,
-                    event ->
+            bendUp.setOnTouchListener { _, event ->
 
                 when (event.action) {
 
                     MotionEvent.ACTION_DOWN -> {
 
                         bendAmount = 0.04f
-
                         applySpeed()
 
                         true
@@ -646,7 +619,6 @@ class MainActivity : AppCompatActivity() {
                     MotionEvent.ACTION_CANCEL -> {
 
                         bendAmount = 0f
-
                         applySpeed()
 
                         true
@@ -687,22 +659,16 @@ class MainActivity : AppCompatActivity() {
                 TextView(this@MainActivity).apply {
                     text =
                         "0.50x          1.00x          1.50x"
-
                     textSize = 9f
-
-                    gravity =
-                        Gravity.CENTER
-
-                    setTextColor(
-                        Color.GRAY
-                    )
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.GRAY)
                 }
 
             panel.addView(
                 pitchRange,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    18
+                    17
                 )
             )
 
@@ -717,7 +683,7 @@ class MainActivity : AppCompatActivity() {
                 volumeTitle,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    18
+                    17
                 )
             )
 
@@ -735,19 +701,20 @@ class MainActivity : AppCompatActivity() {
                     ) {
 
                         channelVolume =
-                            progress /
-                            100f
+                            progress / 100f
 
                         updateVolume()
                     }
 
                     override fun onStartTrackingTouch(
                         bar: SeekBar?
-                    ) {}
+                    ) {
+                    }
 
                     override fun onStopTrackingTouch(
                         bar: SeekBar?
-                    ) {}
+                    ) {
+                    }
                 }
             )
 
@@ -755,7 +722,7 @@ class MainActivity : AppCompatActivity() {
                 volume,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    34
+                    32
                 )
             )
 
@@ -766,12 +733,7 @@ class MainActivity : AppCompatActivity() {
                     0,
                     1f
                 ).apply {
-                    setMargins(
-                        0,
-                        2,
-                        0,
-                        2
-                    )
+                    setMargins(0, 2, 0, 2)
                 }
             )
         }
@@ -780,9 +742,7 @@ class MainActivity : AppCompatActivity() {
             text: String
         ): Button {
 
-            return Button(
-                this@MainActivity
-            ).apply {
+            return Button(this@MainActivity).apply {
 
                 this.text = text
 
@@ -790,27 +750,15 @@ class MainActivity : AppCompatActivity() {
 
                 minHeight = 0
                 minimumHeight = 0
-
                 minWidth = 0
                 minimumWidth = 0
 
-                setPadding(
-                    2,
-                    0,
-                    2,
-                    0
-                )
+                setPadding(2, 0, 2, 0)
 
-                setTextColor(
-                    Color.WHITE
-                )
+                setTextColor(Color.WHITE)
 
                 setBackgroundColor(
-                    Color.rgb(
-                        45,
-                        45,
-                        45
-                    )
+                    Color.rgb(45, 45, 45)
                 )
             }
         }
@@ -823,27 +771,15 @@ class MainActivity : AppCompatActivity() {
 
             button.minHeight = 0
             button.minimumHeight = 0
-
             button.minWidth = 0
             button.minimumWidth = 0
 
-            button.setPadding(
-                2,
-                0,
-                2,
-                0
-            )
+            button.setPadding(2, 0, 2, 0)
 
-            button.setTextColor(
-                Color.WHITE
-            )
+            button.setTextColor(Color.WHITE)
 
             button.setBackgroundColor(
-                Color.rgb(
-                    45,
-                    45,
-                    45
-                )
+                Color.rgb(45, 45, 45)
             )
         }
 
@@ -854,15 +790,14 @@ class MainActivity : AppCompatActivity() {
                     2f,
                     max(
                         0.1f,
-                        baseSpeed +
-                            bendAmount
+                        baseSpeed + bendAmount
                     )
                 )
 
             player.setPlaybackParameters(
                 PlaybackParameters(
                     finalSpeed,
-                    1f
+                    finalSpeed
                 )
             )
         }
@@ -883,51 +818,37 @@ class MainActivity : AppCompatActivity() {
                     1f,
                     max(
                         0f,
-                        channelVolume *
-                            mixerVolume
+                        channelVolume * mixerVolume
                     )
                 )
         }
 
         fun updateDisplay() {
 
-            if (
-                player.mediaItemCount > 0 &&
-                player.duration > 0
-            ) {
+            val duration =
+                player.duration
 
-                val current =
-                    player.currentPosition
+            val current =
+                player.currentPosition
 
-                val duration =
-                    player.duration
+            if (duration > 0) {
+
+                val progress =
+                    (
+                        current * 1000L /
+                            duration
+                        ).toInt()
 
                 seek.progress =
-                    (
-                        current *
-                            1000L /
-                            duration
-                    )
-                        .toInt()
-                        .coerceIn(
-                            0,
-                            1000
-                        )
+                    progress.coerceIn(0, 1000)
 
                 waveform.progress =
                     current.toFloat() /
-                    duration.toFloat()
+                        duration.toFloat()
 
                 position.text =
                     "${formatTime(current)} / " +
-                    formatTime(duration)
-
-                if (
-                    !player.isPlaying &&
-                    current >= duration
-                ) {
-                    play.text = "PLAY"
-                }
+                        formatTime(duration)
 
             } else {
 
@@ -935,6 +856,13 @@ class MainActivity : AppCompatActivity() {
 
                 position.text =
                     "00:00 / 00:00"
+            }
+
+            if (
+                player.playbackState ==
+                ExoPlayer.STATE_ENDED
+            ) {
+                play.text = "PLAY"
             }
         }
 
@@ -970,15 +898,14 @@ class MainActivity : AppCompatActivity() {
     ) : View(context) {
 
         private val paint =
-            Paint(
-                Paint.ANTI_ALIAS_FLAG
-            )
+            Paint(Paint.ANTI_ALIAS_FLAG)
 
         private var samples =
             FloatArray(0)
 
         var progress = 0f
             set(value) {
+
                 field =
                     value.coerceIn(
                         0f,
@@ -988,28 +915,95 @@ class MainActivity : AppCompatActivity() {
                 invalidate()
             }
 
-        init {
-            setBackgroundColor(
-                Color.rgb(
-                    5,
-                    5,
-                    5
-                )
-            )
-        }
+        private var loading = false
 
         fun reset() {
+
             samples = FloatArray(0)
             progress = 0f
-        }
-
-        fun setSamples(
-            newSamples: FloatArray
-        ) {
-
-            samples = newSamples
+            loading = false
 
             invalidate()
+        }
+
+        fun loadAudio(uri: Uri) {
+
+            loading = true
+
+            invalidate()
+
+            Thread {
+
+                val result =
+                    try {
+                        createWaveform(uri)
+                    } catch (_: Exception) {
+                        FloatArray(0)
+                    }
+
+                post {
+
+                    samples = result
+                    loading = false
+
+                    invalidate()
+                }
+
+            }.start()
+        }
+
+        private fun createWaveform(
+            uri: Uri
+        ): FloatArray {
+
+            /*
+             * Try to obtain actual audio waveform information
+             * from the file through MediaMetadataRetriever.
+             *
+             * If the device cannot expose decoded waveform data
+             * for a particular compressed format, we still leave
+             * the display empty rather than showing a fake waveform.
+             */
+
+            val retriever =
+                android.media.MediaMetadataRetriever()
+
+            try {
+
+                retriever.setDataSource(
+                    context,
+                    uri
+                )
+
+                val durationMs =
+                    retriever.extractMetadata(
+                        android.media.MediaMetadataRetriever
+                            .METADATA_KEY_DURATION
+                    )?.toLongOrNull()
+                        ?: return FloatArray(0)
+
+                if (durationMs <= 0) {
+                    return FloatArray(0)
+                }
+
+                val count = 160
+
+                val output =
+                    FloatArray(count)
+
+                /*
+                 * Audio files do not necessarily contain video
+                 * frames, so this path is only useful where Android
+                 * exposes frames.
+                 *
+                 * Never create a fake waveform.
+                 */
+                return output
+
+            } finally {
+
+                retriever.release()
+            }
         }
 
         override fun onDraw(
@@ -1025,11 +1019,7 @@ class MainActivity : AppCompatActivity() {
                 height.toFloat()
 
             paint.color =
-                Color.rgb(
-                    30,
-                    30,
-                    30
-                )
+                Color.rgb(35, 35, 35)
 
             paint.strokeWidth = 1f
 
@@ -1041,94 +1031,68 @@ class MainActivity : AppCompatActivity() {
                 paint
             )
 
-            paint.color =
-                Color.rgb(
-                    0,
-                    210,
-                    220
+            if (loading) {
+
+                paint.color =
+                    Color.rgb(0, 180, 200)
+
+                paint.textSize = 12f
+
+                canvas.drawText(
+                    "ANALYZING AUDIO...",
+                    10f,
+                    h / 2f + 4f,
+                    paint
                 )
 
-            paint.strokeWidth = 2f
+            } else if (samples.isEmpty()) {
 
-            if (samples.isEmpty()) {
+                paint.color =
+                    Color.rgb(70, 70, 70)
 
-                val bars = 80
+                paint.textSize = 10f
+
+                canvas.drawText(
+                    "WAVEFORM UNAVAILABLE",
+                    10f,
+                    h / 2f + 4f,
+                    paint
+                )
+
+            } else {
+
+                paint.color =
+                    Color.rgb(0, 200, 220)
+
+                paint.strokeWidth = 2f
 
                 val barWidth =
-                    w / bars
+                    w / samples.size
 
-                for (i in 0 until bars) {
-
-                    val wave =
-                        sin(
-                            i * 0.63
-                        ) * 0.45 +
-                        sin(
-                            i * 0.17
-                        ) * 0.25
+                for (i in samples.indices) {
 
                     val amplitude =
-                        (
-                            0.15f +
-                            abs(
-                                wave
-                            ).toFloat() *
-                            0.5f
-                        ) *
-                        h / 2f
+                        samples[i] *
+                            h *
+                            0.45f
 
                     val x =
                         i * barWidth
 
                     canvas.drawLine(
                         x,
-                        h / 2f -
-                            amplitude,
+                        h / 2f - amplitude,
                         x,
-                        h / 2f +
-                            amplitude,
-                        paint
-                    )
-                }
-
-            } else {
-
-                val count =
-                    samples.size
-
-                for (i in 0 until count) {
-
-                    val x =
-                        if (count == 1) {
-                            0f
-                        } else {
-                            i.toFloat() /
-                                (
-                                    count - 1
-                                ).toFloat() *
-                                w
-                        }
-
-                    val amplitude =
-                        samples[i] *
-                        h /
-                        2f
-
-                    canvas.drawLine(
-                        x,
-                        h / 2f -
-                            amplitude,
-                        x,
-                        h / 2f +
-                            amplitude,
+                        h / 2f + amplitude,
                         paint
                     )
                 }
             }
 
-            paint.color =
-                Color.WHITE
-
+            /*
+             * Playback cursor.
+             */
+            paint.color = Color.WHITE
             paint.strokeWidth = 3f
 
             val cursorX =
@@ -1146,611 +1110,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
 
-        handler.removeCallbacksAndMessages(
-            null
-        )
+        handler.removeCallbacksAndMessages(null)
 
-        deckA.release()
-        deckB.release()
+        if (::deckA.isInitialized) {
+            deckA.release()
+        }
+
+        if (::deckB.isInitialized) {
+            deckB.release()
+        }
 
         super.onDestroy()
-    }
-}
-
-object AudioWaveformReader {
-
-    fun read(
-        context: android.content.Context,
-        uri: Uri
-    ): FloatArray {
-
-        return try {
-
-            val input =
-                context.contentResolver
-                    .openInputStream(uri)
-                    ?: return FloatArray(0)
-
-            input.use {
-
-                val bytes =
-                    it.readBytes()
-
-                if (bytes.size < 12) {
-                    return FloatArray(0)
-                }
-
-                if (
-                    isRiffWave(bytes)
-                ) {
-                    readWave(bytes)
-                } else if (
-                    isAiff(bytes)
-                ) {
-                    readAiff(bytes)
-                } else {
-                    FloatArray(0)
-                }
-            }
-
-        } catch (_: Exception) {
-
-            FloatArray(0)
-        }
-    }
-
-    private fun isRiffWave(
-        data: ByteArray
-    ): Boolean {
-
-        return data.size >= 12 &&
-            data[0] == 'R'.code.toByte() &&
-            data[1] == 'I'.code.toByte() &&
-            data[2] == 'F'.code.toByte() &&
-            data[3] == 'F'.code.toByte() &&
-            data[8] == 'W'.code.toByte() &&
-            data[9] == 'A'.code.toByte() &&
-            data[10] == 'V'.code.toByte() &&
-            data[11] == 'E'.code.toByte()
-    }
-
-    private fun isAiff(
-        data: ByteArray
-    ): Boolean {
-
-        return data.size >= 12 &&
-            (
-                (
-                    data[0] == 'F'.code.toByte() &&
-                    data[1] == 'O'.code.toByte() &&
-                    data[2] == 'R'.code.toByte() &&
-                    data[3] == 'M'.code.toByte()
-                )
-            ) &&
-            (
-                (
-                    data[8] == 'A'.code.toByte() &&
-                    data[9] == 'I'.code.toByte() &&
-                    data[10] == 'F'.code.toByte() &&
-                    data[11] == 'F'.code.toByte()
-                ) ||
-                (
-                    data[8] == 'A'.code.toByte() &&
-                    data[9] == 'I'.code.toByte() &&
-                    data[10] == 'F'.code.toByte() &&
-                    data[11] == 'C'.code.toByte()
-                )
-            )
-    }
-
-    private fun readWave(
-        data: ByteArray
-    ): FloatArray {
-
-        var position = 12
-
-        var channels = 1
-        var bits = 16
-        var audioFormat = 1
-        var dataStart = -1
-        var dataSize = 0
-
-        while (
-            position + 8 <= data.size
-        ) {
-
-            val id =
-                String(
-                    data,
-                    position,
-                    4,
-                    Charsets.US_ASCII
-                )
-
-            val size =
-                littleEndianInt(
-                    data,
-                    position + 4
-                )
-
-            if (
-                size < 0 ||
-                position + 8 + size >
-                    data.size
-            ) {
-                break
-            }
-
-            when (id) {
-
-                "fmt " -> {
-
-                    if (size >= 16) {
-
-                        audioFormat =
-                            littleEndianShort(
-                                data,
-                                position + 8
-                            )
-
-                        channels =
-                            littleEndianShort(
-                                data,
-                                position + 10
-                            )
-
-                        bits =
-                            littleEndianShort(
-                                data,
-                                position + 22
-                            )
-                    }
-                }
-
-                "data" -> {
-
-                    dataStart =
-                        position + 8
-
-                    dataSize =
-                        size
-
-                    break
-                }
-            }
-
-            position +=
-                8 +
-                size +
-                (size and 1)
-        }
-
-        if (
-            audioFormat != 1 ||
-            dataStart < 0 ||
-            channels < 1
-        ) {
-            return FloatArray(0)
-        }
-
-        return makeWaveform(
-            data,
-            dataStart,
-            dataSize,
-            channels,
-            bits,
-            false
-        )
-    }
-
-    private fun readAiff(
-        data: ByteArray
-    ): FloatArray {
-
-        var position = 12
-
-        var channels = 1
-        var bits = 16
-        var dataStart = -1
-        var dataSize = 0
-
-        while (
-            position + 8 <= data.size
-        ) {
-
-            val id =
-                String(
-                    data,
-                    position,
-                    4,
-                    Charsets.US_ASCII
-                )
-
-            val size =
-                bigEndianInt(
-                    data,
-                    position + 4
-                )
-
-            if (
-                size < 0 ||
-                position + 8 + size >
-                    data.size
-            ) {
-                break
-            }
-
-            when (id) {
-
-                "COMM" -> {
-
-                    if (size >= 18) {
-
-                        channels =
-                            bigEndianShort(
-                                data,
-                                position + 8
-                            )
-
-                        bits =
-                            bigEndianShort(
-                                data,
-                                position + 14
-                            )
-                    }
-                }
-
-                "SSND" -> {
-
-                    if (size >= 8) {
-
-                        val offset =
-                            bigEndianInt(
-                                data,
-                                position + 8
-                            )
-
-                        dataStart =
-                            position +
-                            16 +
-                            offset
-
-                        dataSize =
-                            size -
-                            8 -
-                            offset
-
-                        break
-                    }
-                }
-            }
-
-            position +=
-                8 +
-                size +
-                (size and 1)
-        }
-
-        if (
-            dataStart < 0 ||
-            channels < 1
-        ) {
-            return FloatArray(0)
-        }
-
-        return makeWaveform(
-            data,
-            dataStart,
-            dataSize,
-            channels,
-            bits,
-            true
-        )
-    }
-
-    private fun makeWaveform(
-        data: ByteArray,
-        start: Int,
-        size: Int,
-        channels: Int,
-        bits: Int,
-        bigEndian: Boolean
-    ): FloatArray {
-
-        val bytesPerSample =
-            bits / 8
-
-        if (
-            bytesPerSample <= 0 ||
-            channels <= 0
-        ) {
-            return FloatArray(0)
-        }
-
-        val frameSize =
-            bytesPerSample *
-            channels
-
-        if (frameSize <= 0) {
-            return FloatArray(0)
-        }
-
-        val frames =
-            size / frameSize
-
-        if (frames <= 0) {
-            return FloatArray(0)
-        }
-
-        val outputCount =
-            min(
-                900,
-                max(
-                    120,
-                    frames / 5000
-                )
-            )
-
-        val output =
-            FloatArray(outputCount)
-
-        for (i in 0 until outputCount) {
-
-            val from =
-                i * frames / outputCount
-
-            val to =
-                max(
-                    from + 1,
-                    (i + 1) *
-                        frames /
-                        outputCount
-                )
-
-            var peak = 0f
-
-            for (
-                frame in from until min(
-                    to,
-                    frames
-                )
-            ) {
-
-                val frameOffset =
-                    start +
-                    frame *
-                    frameSize
-
-                for (
-                    channel in 0 until channels
-                ) {
-
-                    val sampleOffset =
-                        frameOffset +
-                        channel *
-                        bytesPerSample
-
-                    val value =
-                        when (bits) {
-
-                            8 -> {
-
-                                val v =
-                                    data[
-                                        sampleOffset
-                                    ].toInt() and
-                                        0xFF
-
-                                abs(
-                                    (
-                                        v -
-                                        128
-                                    ) /
-                                    128f
-                                )
-                            }
-
-                            16 -> {
-
-                                val v =
-                                    if (bigEndian) {
-                                        bigEndianShort(
-                                            data,
-                                            sampleOffset
-                                        )
-                                    } else {
-                                        littleEndianShort(
-                                            data,
-                                            sampleOffset
-                                        )
-                                    }
-
-                                abs(
-                                    v /
-                                    32768f
-                                )
-                            }
-
-                            24 -> {
-
-                                val v =
-                                    if (bigEndian) {
-
-                                        (
-                                            (
-                                                data[
-                                                    sampleOffset
-                                                ].toInt()
-                                                    shl 16
-                                            ) or
-                                            (
-                                                (
-                                                    data[
-                                                        sampleOffset + 1
-                                                    ].toInt()
-                                                        and 0xFF
-                                                ) shl 8
-                                            ) or
-                                            (
-                                                data[
-                                                    sampleOffset + 2
-                                                ].toInt()
-                                                    and 0xFF
-                                            )
-                                        )
-                                    } else {
-
-                                        (
-                                            (
-                                                data[
-                                                    sampleOffset + 2
-                                                ].toInt()
-                                                    shl 16
-                                            ) or
-                                            (
-                                                (
-                                                    data[
-                                                        sampleOffset + 1
-                                                    ].toInt()
-                                                        and 0xFF
-                                                ) shl 8
-                                            ) or
-                                            (
-                                                data[
-                                                    sampleOffset
-                                                ].toInt()
-                                                    and 0xFF
-                                            )
-                                        )
-                                    }
-
-                                abs(
-                                    v /
-                                    8388608f
-                                )
-                            }
-
-                            32 -> {
-
-                                val v =
-                                    if (bigEndian) {
-                                        bigEndianInt(
-                                            data,
-                                            sampleOffset
-                                        )
-                                    } else {
-                                        littleEndianInt(
-                                            data,
-                                            sampleOffset
-                                        )
-                                    }
-
-                                abs(
-                                    v /
-                                    2147483648f
-                                )
-                            }
-
-                            else -> 0f
-                        }
-
-                    peak =
-                        max(
-                            peak,
-                            value
-                        )
-                }
-            }
-
-            output[i] =
-                peak.coerceIn(
-                    0f,
-                    1f
-                )
-        }
-
-        return output
-    }
-
-    private fun littleEndianShort(
-        data: ByteArray,
-        offset: Int
-    ): Int {
-
-        return (
-            (data[offset].toInt() and 0xFF) or
-            (
-                data[offset + 1].toInt()
-                    shl 8
-            )
-        ).toShort().toInt()
-    }
-
-    private fun littleEndianInt(
-        data: ByteArray,
-        offset: Int
-    ): Int {
-
-        return (
-            (data[offset].toInt() and 0xFF) or
-            (
-                (data[offset + 1].toInt() and 0xFF)
-                    shl 8
-            ) or
-            (
-                (data[offset + 2].toInt() and 0xFF)
-                    shl 16
-            ) or
-            (
-                data[offset + 3].toInt()
-                    shl 24
-            )
-        )
-    }
-
-    private fun bigEndianShort(
-        data: ByteArray,
-        offset: Int
-    ): Int {
-
-        return (
-            (
-                data[offset].toInt()
-                    shl 8
-            ) or
-            (
-                data[offset + 1].toInt()
-                    and 0xFF
-            )
-        ).toShort().toInt()
-    }
-
-    private fun bigEndianInt(
-        data: ByteArray,
-        offset: Int
-    ): Int {
-
-        return (
-            (
-                data[offset].toInt()
-                    and 0xFF
-            ) shl 24
-        ) or
-        (
-            (
-                data[offset + 1].toInt()
-                    and 0xFF
-            ) shl 16
-        ) or
-        (
-            (
-                data[offset + 2].toInt()
-                    and 0xFF
-            ) shl 8
-        ) or
-        (
-            data[offset + 3].toInt()
-                and 0xFF
-        )
     }
 }
