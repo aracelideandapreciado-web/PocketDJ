@@ -4,6 +4,7 @@ import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.media.audiofx.Equalizer
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -154,6 +155,9 @@ class MainActivity : AppCompatActivity() {
 
         private var baseSpeed = 1f
         private var bendAmount = 0f
+        private var bassCutEnabled = false
+        private var equalizer: Equalizer? = null
+        private var originalBassLevels = ShortArray(0)
 
         private var cuePosition = 0L
 
@@ -461,13 +465,10 @@ class MainActivity : AppCompatActivity() {
 
             bass.setOnClickListener {
 
-                /*
-                 * Keep the control functional without introducing
-                 * a separate audio-processing dependency.
-                 */
-                bass.isSelected = !bass.isSelected
+                bassCutEnabled = !bassCutEnabled
+                applyBassCut()
 
-                if (bass.isSelected) {
+                if (bassCutEnabled) {
 
                     bass.text = "BASS CUT"
                     bass.setTextColor(Color.BLACK)
@@ -489,36 +490,36 @@ class MainActivity : AppCompatActivity() {
                 load,
                 LinearLayout.LayoutParams(
                     0,
-                    45,
+                    56,
                     1f
-                )
+                ).apply { setMargins(2, 2, 2, 2) }
             )
 
             controls.addView(
                 play,
                 LinearLayout.LayoutParams(
                     0,
-                    45,
+                    56,
                     1f
-                )
+                ).apply { setMargins(2, 2, 2, 2) }
             )
 
             controls.addView(
                 cue,
                 LinearLayout.LayoutParams(
                     0,
-                    45,
+                    56,
                     1f
-                )
+                ).apply { setMargins(2, 2, 2, 2) }
             )
 
             controls.addView(
                 bass,
                 LinearLayout.LayoutParams(
                     0,
-                    45,
+                    56,
                     1f
-                )
+                ).apply { setMargins(2, 2, 2, 2) }
             )
 
             panel.addView(controls)
@@ -644,34 +645,34 @@ class MainActivity : AppCompatActivity() {
             pitchRow.addView(
                 bendDown,
                 LinearLayout.LayoutParams(
-                    52,
-                    42
-                )
+                    62,
+                    52
+                ).apply { setMargins(2, 2, 6, 2) }
             )
 
             pitchRow.addView(
                 speed,
                 LinearLayout.LayoutParams(
                     0,
-                    42,
+                    52,
                     1f
-                )
+                ).apply { setMargins(0, 2, 0, 2) }
             )
 
             pitchRow.addView(
                 pitchReset,
                 LinearLayout.LayoutParams(
-                    58,
-                    42
-                )
+                    76,
+                    52
+                ).apply { setMargins(8, 2, 8, 2) }
             )
 
             pitchRow.addView(
                 bendUp,
                 LinearLayout.LayoutParams(
-                    52,
-                    42
-                )
+                    62,
+                    52
+                ).apply { setMargins(6, 2, 2, 2) }
             )
 
             panel.addView(pitchRow)
@@ -767,7 +768,8 @@ class MainActivity : AppCompatActivity() {
 
                 this.text = text
 
-                textSize = 10f
+                textSize = 12f
+                isAllCaps = false
 
                 minHeight = 0
                 minimumHeight = 0
@@ -802,6 +804,56 @@ class MainActivity : AppCompatActivity() {
             button.setBackgroundColor(
                 Color.rgb(45, 45, 45)
             )
+        }
+
+        private fun applyBassCut() {
+
+            try {
+                if (equalizer == null) {
+                    val sessionId = player.audioSessionId
+
+                    if (sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0) {
+                        handler.postDelayed({ applyBassCut() }, 200)
+                        return
+                    }
+
+                    equalizer = Equalizer(0, sessionId).apply {
+                        enabled = true
+                    }
+
+                    val eq = equalizer ?: return
+                    val bands = eq.numberOfBands.toInt()
+                    originalBassLevels = ShortArray(bands)
+
+                    for (i in 0 until bands) {
+                        val band = i.toShort()
+                        originalBassLevels[i] = eq.getBandLevel(band)
+                    }
+                }
+
+                val eq = equalizer ?: return
+                val range = eq.bandLevelRange
+                val minimumLevel = range[0]
+                val bassCutLevel = max(
+                    minimumLevel.toInt(),
+                    -1200
+                ).toShort()
+
+                for (i in 0 until eq.numberOfBands.toInt()) {
+                    val band = i.toShort()
+                    val frequencyHz =
+                        eq.getCenterFreq(band).toLong() / 1000L
+
+                    if (bassCutEnabled && frequencyHz <= 250L) {
+                        eq.setBandLevel(band, bassCutLevel)
+                    } else if (i < originalBassLevels.size) {
+                        eq.setBandLevel(band, originalBassLevels[i])
+                    }
+                }
+
+            } catch (_: Exception) {
+                // Some Android devices do not expose an EQ for the player session.
+            }
         }
 
         private fun applySpeed() {
@@ -910,6 +962,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         fun release() {
+            try {
+                equalizer?.release()
+            } catch (_: Exception) {
+            }
+            equalizer = null
             player.release()
         }
     }
