@@ -35,6 +35,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.PI
+import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
 
@@ -253,6 +254,10 @@ class MainActivity : AppCompatActivity() {
                     player.prepare()
 
                     waveform.loadAudio(playableUri)
+                    if (detectedBpm == null) {
+                        bpm.text = "BPM …"
+                        estimateBpmAsync(playableUri)
+                    }
                     play.text = "PLAY"
                     play.isEnabled = true
                 }
@@ -275,6 +280,220 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }.start()
+        }
+
+        private fun estimateBpmAsync(uri: Uri) {
+            Thread {
+                val value = try {
+                    estimateBpm(uri)
+                } catch (_: Exception) {
+                    null
+                }
+
+                bpm.post {
+                    if (detectedBpm == null && value != null) {
+                        detectedBpm = value
+                        bpm.text = "BPM ${formatBpm(value)}"
+                    } else if (detectedBpm == null) {
+                        bpm.text = "BPM --"
+                    }
+                }
+            }.start()
+        }
+
+        /*
+         * Lightweight fallback for tracks without BPM metadata.
+         * We inspect only a few short windows, preferably after the intro,
+         * then choose the tempo that repeats most consistently.
+         * This runs once in the background and never during playback.
+         */
+        private fun estimateBpm(uri: Uri): Double? {
+            val extractor = android.media.MediaExtractor()
+            var decoder: android.media.MediaCodec? = null
+            try {
+                val descriptor = contentResolver.openFileDescriptor(uri, "r") ?: return null
+                try {
+                    extractor.setDataSource(descriptor.fileDescriptor)
+                } finally {
+                    descriptor.close()
+                }
+
+                var trackIndex = -1
+                for (i in 0 until extractor.trackCount) {
+                    val f = extractor.getTrackFormat(i)
+                    val mime = f.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+                    if (mime.startsWith("audio/")) { trackIndex = i; break }
+                }
+                if (trackIndex < 0) return null
+                extractor.selectTrack(trackIndex)
+                val format = extractor.getTrackFormat(trackIndex)
+                val mime = format.getString(android.media.MediaFormat.KEY_MIME) ?: return null
+                val durationUs = if (format.containsKey(android.media.MediaFormat.KEY_DURATION))
+                    format.getLong(android.media.MediaFormat.KEY_DURATION) else return null
+                if (durationUs < 8_000_000L) return null
+
+                val sampleRateHint = if (format.containsKey(android.media.MediaFormat.KEY_SAMPLE_RATE))
+                    format.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE) else 48_000
+
+                val starts = ArrayList<Long>()
+                val preferred = longArrayOf(30_000_000L, 60_000_000L, 120_000_000L, 240_000_000L)
+                for (start in preferred) if (start + 8_000_000L < durationUs) starts.add(start)
+                if (starts.isEmpty()) starts.add((durationUs / 2L).coerceAtLeast(0L))
+                val maxSamples = 4
+                while (starts.size > maxSamples) starts.removeAt(starts.lastIndex)
+
+                val estimates = ArrayList<Double>()
+                for (startUs in starts) {
+                    val estimate = estimateBpmWindow(extractor, mime, format, startUs, sampleRateHint)
+                    if (estimate != null) estimates.add(estimate)
+                }
+                if (estimates.isEmpty()) return null
+
+                // Quantize to quarter-BPM bins and prefer the cluster with the most agreement.
+                val clusters = estimates.groupBy { kotlin.math.round(it * 4.0) / 4.0 }
+                val best = clusters.entries.maxByOrNull { it.value.size }?.key ?: return null
+                val close = estimates.filter { kotlin.math.abs(it - best) <= 2.0 }
+                return if (close.size >= 2 || estimates.size == 1) close.average() else null
+            } finally {
+                try { decoder?.stop() } catch (_: Exception) {}
+                try { decoder?.release() } catch (_: Exception) {}
+                try { extractor.release() } catch (_: Exception) {}
+            }
+        }
+
+        private fun estimateBpmWindow(
+            extractor: android.media.MediaExtractor,
+            mime: String,
+            format: android.media.MediaFormat,
+            startUs: Long,
+            sampleRateHint: Int
+        ): Double? {
+            extractor.seekTo(startUs, android.media.MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+            val sampleRate = sampleRateHint.coerceIn(8_000, 96_000)
+            val envelopeRate = 100
+            val envelope = FloatArray(800)
+            var envelopeIndex = 0
+            var decoder: android.media.MediaCodec? = null
+
+            fun addPcm(buffer: java.nio.ByteBuffer, channels: Int) {
+                val bytesPerFrame = 2 * channels
+                if (bytesPerFrame <= 0) return
+                val framesPerBin = max(1, sampleRate / envelopeRate)
+                var sum = 0.0
+                var count = 0
+                while (buffer.remaining() >= bytesPerFrame && envelopeIndex < envelope.size) {
+                    var energy = 0f
+                    repeat(channels) {
+                        val lo = buffer.get().toInt() and 0xFF
+                        val hi = buffer.get().toInt()
+                        val sample = ((hi shl 8) or lo).toShort().toInt() / 32768f
+                        energy += abs(sample)
+                    }
+                    sum += energy / channels
+                    count++
+                    if (count >= framesPerBin) {
+                        envelope[envelopeIndex++] = (sum / count).toFloat()
+                        sum = 0.0
+                        count = 0
+                    }
+                }
+            }
+
+            try {
+                var channels = if (format.containsKey(android.media.MediaFormat.KEY_CHANNEL_COUNT))
+                    format.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1) else 2
+
+                if (mime == "audio/raw") {
+                    val endUs = startUs + 8_000_000L
+                    while (extractor.sampleTime < endUs && envelopeIndex < envelope.size) {
+                        val buffer = java.nio.ByteBuffer.allocateDirect(64 * 1024)
+                        val size = extractor.readSampleData(buffer, 0)
+                        if (size < 0) break
+                        buffer.limit(size)
+                        addPcm(buffer, channels)
+                        if (!extractor.advance()) break
+                    }
+                } else {
+                    decoder = android.media.MediaCodec.createDecoderByType(mime)
+                    decoder.configure(format, null, null, 0)
+                    decoder.start()
+                    val info = android.media.MediaCodec.BufferInfo()
+                    var inputDone = false
+                    var outputDone = false
+                    val endUs = startUs + 8_000_000L
+                    while (!outputDone && envelopeIndex < envelope.size) {
+                        if (!inputDone) {
+                            val inputIndex = decoder.dequeueInputBuffer(10_000L)
+                            if (inputIndex >= 0) {
+                                val input = decoder.getInputBuffer(inputIndex)
+                                if (input != null) {
+                                    input.clear()
+                                    val size = extractor.readSampleData(input, 0)
+                                    val time = extractor.sampleTime
+                                    if (size < 0 || time > endUs) {
+                                        decoder.queueInputBuffer(inputIndex, 0, 0, endUs,
+                                            android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                        inputDone = true
+                                    } else {
+                                        decoder.queueInputBuffer(inputIndex, 0, size, time, 0)
+                                        extractor.advance()
+                                    }
+                                }
+                            }
+                        }
+                        val outputIndex = decoder.dequeueOutputBuffer(info, 10_000L)
+                        when {
+                            outputIndex == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                                val out = decoder.outputFormat
+                                if (out.containsKey(android.media.MediaFormat.KEY_CHANNEL_COUNT))
+                                    channels = out.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+                            }
+                            outputIndex >= 0 -> {
+                                val out = decoder.getOutputBuffer(outputIndex)
+                                if (out != null && info.size > 0) {
+                                    val start = info.offset.coerceIn(0, out.capacity())
+                                    val end = (info.offset + info.size).coerceIn(start, out.capacity())
+                                    out.position(start); out.limit(end)
+                                    addPcm(out, channels)
+                                }
+                                val eos = (info.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+                                decoder.releaseOutputBuffer(outputIndex, false)
+                                if (eos) outputDone = true
+                            }
+                        }
+                    }
+                }
+
+                if (envelopeIndex < 120) return null
+                // Remove DC-like level and emphasize changes, which makes beat pulses clearer.
+                var mean = 0.0
+                for (i in 0 until envelopeIndex) mean += envelope[i]
+                mean /= envelopeIndex
+                for (i in 0 until envelopeIndex) envelope[i] = max(0f, envelope[i] - mean.toFloat())
+
+                var bestBpm = 0.0
+                var bestScore = Double.NEGATIVE_INFINITY
+                for (bpmCandidate in 70..180) {
+                    val lag = (envelopeRate * 60.0 / bpmCandidate).roundToInt()
+                    if (lag <= 0 || lag >= envelopeIndex / 2) continue
+                    var score = 0.0
+                    var count = 0
+                    var i = lag
+                    while (i < envelopeIndex) {
+                        score += envelope[i].toDouble() * envelope[i - lag].toDouble()
+                        count++
+                        i++
+                    }
+                    if (count > 0) {
+                        score /= count
+                        if (score > bestScore) { bestScore = score; bestBpm = bpmCandidate.toDouble() }
+                    }
+                }
+                return bestBpm.takeIf { it in 70.0..180.0 }
+            } finally {
+                try { decoder?.stop() } catch (_: Exception) {}
+                try { decoder?.release() } catch (_: Exception) {}
+            }
         }
 
         private fun formatBpm(value: Double): String {
