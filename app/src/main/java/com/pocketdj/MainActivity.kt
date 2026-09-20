@@ -807,6 +807,11 @@ class MainActivity : AppCompatActivity() {
 
                             val bytesPerSample = bits / 8
                             val block = ByteArray(64 * 1024)
+                            // AIFF PCM is big-endian. WAV PCM is little-endian.
+                            // Keep incomplete samples between chunks so 24-bit audio
+                            // is never re-aligned incorrectly at a 64 KB boundary.
+                            val carry = ByteArray(4)
+                            var carrySize = 0
                             var remaining = dataSize
                             while (remaining > 0) {
                                 val want = minOf(block.size.toLong(), remaining).toInt()
@@ -822,21 +827,52 @@ class MainActivity : AppCompatActivity() {
                                         output.write(block, 0, n)
                                     }
                                 } else {
-                                    var i = 0
-                                    while (i + bytesPerSample <= n) {
+                                    var offset = 0
+
+                                    // Complete a sample left over from the previous chunk.
+                                    if (carrySize > 0) {
+                                        val need = bytesPerSample - carrySize
+                                        if (n >= need) {
+                                            System.arraycopy(block, 0, carry, carrySize, need)
+                                            var j = bytesPerSample - 1
+                                            while (j >= 0) {
+                                                output.write(carry[j].toInt() and 0xFF)
+                                                j--
+                                            }
+                                            offset = need
+                                            carrySize = 0
+                                        } else {
+                                            System.arraycopy(block, 0, carry, carrySize, n)
+                                            carrySize += n
+                                            remaining -= n
+                                            continue
+                                        }
+                                    }
+
+                                    val completeBytes = ((n - offset) / bytesPerSample) * bytesPerSample
+                                    var i = offset
+                                    val end = offset + completeBytes
+                                    while (i < end) {
                                         var j = bytesPerSample - 1
                                         while (j >= 0) {
-                                            output.write(block[i + j].toInt())
+                                            output.write(block[i + j].toInt() and 0xFF)
                                             j--
                                         }
                                         i += bytesPerSample
                                     }
-                                    if (i < n) {
-                                        output.write(block, i, n - i)
+
+                                    val leftover = n - end
+                                    if (leftover > 0) {
+                                        System.arraycopy(block, end, carry, 0, leftover)
+                                        carrySize = leftover
                                     }
                                 }
 
                                 remaining -= n
+                            }
+
+                            if (carrySize != 0) {
+                                throw java.io.IOException("Incomplete AIFF PCM sample")
                             }
 
                             audioFound = true
