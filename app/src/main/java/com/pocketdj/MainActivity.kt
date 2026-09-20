@@ -1,6 +1,7 @@
 package com.pocketdj
 
 import android.content.Intent
+import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -82,7 +83,23 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(root)
 
+        // Keep the app process alive for background audio playback.
+        startBackgroundPlaybackService()
+
         handler.post(displayRunnable)
+    }
+
+    private fun startBackgroundPlaybackService() {
+        try {
+            val intent = Intent(this, BackgroundPlaybackService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (_: Exception) {
+            // Playback can still work normally if the service cannot start.
+        }
     }
 
     private val displayRunnable = object : Runnable {
@@ -1003,7 +1020,7 @@ class MainActivity : AppCompatActivity() {
                     .setUsage(C.USAGE_MEDIA)
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                     .build(),
-                false
+                true
             )
 
             player.volume = mixerVolume
