@@ -9,6 +9,12 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.InputStream
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -211,32 +217,316 @@ class MainActivity : AppCompatActivity() {
                 loadedUri = uri
 
                 player.stop()
+                waveform.reset()
+                play.text = "LOADING"
+                play.isEnabled = false
 
-                player.setMediaItem(
-                    MediaItem.fromUri(uri)
-                )
-
-                player.prepare()
-
-                trackName.text =
+                val displayName =
                     uri.lastPathSegment
                         ?.substringAfterLast("/")
                         ?: "Audio file"
 
+                trackName.text = displayName
                 cuePosition = 0L
 
-                waveform.reset()
-
                 /*
-                 * Generate a waveform from the actual file.
-                 *
-                 * The waveform class reads the audio file instead
-                 * of drawing an unrelated decorative waveform.
+                 * Android/Media3 does not provide reliable direct AIFF
+                 * container playback on all devices. Convert PCM AIFF
+                 * to a temporary WAV file while preserving the original
+                 * sample rate, channels and bit depth.
                  */
-                waveform.loadAudio(uri)
+                preparePlayableUri(uri) { playableUri ->
+                    loadedUri = playableUri
 
-                play.text = "PLAY"
+                    player.setMediaItem(
+                        MediaItem.fromUri(playableUri)
+                    )
+                    player.prepare()
+
+                    waveform.loadAudio(playableUri)
+                    play.text = "PLAY"
+                    play.isEnabled = true
+                }
             }
+
+        private fun preparePlayableUri(
+            uri: Uri,
+            onReady: (Uri) -> Unit
+        ) {
+            if (!isAiffUri(uri)) {
+                onReady(uri)
+                return
+            }
+
+            Thread {
+                val converted = try {
+                    convertAiffToWav(uri)
+                } catch (_: Exception) {
+                    null
+                }
+
+                post {
+                    if (converted != null) {
+                        onReady(Uri.fromFile(converted))
+                    } else {
+                        trackName.text = "AIFF could not be decoded"
+                        play.text = "PLAY"
+                        play.isEnabled = true
+                    }
+                }
+            }.start()
+        }
+
+        private fun isAiffUri(uri: Uri): Boolean {
+            val name = uri.lastPathSegment?.lowercase() ?: return false
+            return name.endsWith(".aiff") ||
+                name.endsWith(".aif") ||
+                name.endsWith(".aifc")
+        }
+
+        private fun readFully(input: InputStream, buffer: ByteArray) {
+            var offset = 0
+            while (offset < buffer.size) {
+                val n = input.read(buffer, offset, buffer.size - offset)
+                if (n < 0) throw java.io.EOFException()
+                offset += n
+            }
+        }
+
+        private fun readU16BE(b: ByteArray): Int =
+            ((b[0].toInt() and 0xFF) shl 8) or (b[1].toInt() and 0xFF)
+
+        private fun readU32BE(b: ByteArray): Long =
+            ((b[0].toLong() and 0xFF) shl 24) or
+                ((b[1].toLong() and 0xFF) shl 16) or
+                ((b[2].toLong() and 0xFF) shl 8) or
+                (b[3].toLong() and 0xFF)
+
+        private fun readIeeeExtended(b: ByteArray): Double {
+            val exponent = ((b[0].toInt() and 0x7F) shl 8) or
+                (b[1].toInt() and 0xFF)
+            if (exponent == 0) return 0.0
+
+            var mantissa = 0.0
+            for (i in 2 until 10) {
+                mantissa = mantissa * 256.0 + (b[i].toInt() and 0xFF)
+            }
+
+            val value = mantissa / Math.pow(2.0, 63.0) *
+                Math.pow(2.0, exponent - 16383 + 1)
+            return if ((b[0].toInt() and 0x80) != 0) -value else value
+        }
+
+        private fun writeLe16(out: BufferedOutputStream, value: Int) {
+            out.write(value and 0xFF)
+            out.write((value ushr 8) and 0xFF)
+        }
+
+        private fun writeLe32(out: BufferedOutputStream, value: Long) {
+            out.write((value and 0xFF).toInt())
+            out.write(((value ushr 8) and 0xFF).toInt())
+            out.write(((value ushr 16) and 0xFF).toInt())
+            out.write(((value ushr 24) and 0xFF).toInt())
+        }
+
+        private fun writeFourCC(out: BufferedOutputStream, text: String) {
+            out.write(text.toByteArray(Charsets.US_ASCII))
+        }
+
+        private fun writeWavHeader(
+            out: BufferedOutputStream,
+            channels: Int,
+            sampleRate: Int,
+            bits: Int,
+            dataSize: Long
+        ) {
+            writeFourCC(out, "RIFF")
+            writeLe32(out, 36L + dataSize)
+            writeFourCC(out, "WAVE")
+            writeFourCC(out, "fmt ")
+            writeLe32(out, 16)
+            writeLe16(out, 1)
+            writeLe16(out, channels)
+            writeLe32(out, sampleRate.toLong())
+            val blockAlign = channels * (bits / 8)
+            val byteRate = sampleRate.toLong() * blockAlign
+            writeLe32(out, byteRate)
+            writeLe16(out, blockAlign)
+            writeLe16(out, bits)
+            writeFourCC(out, "data")
+            writeLe32(out, dataSize)
+        }
+
+        private fun convertAiffToWav(uri: Uri): File {
+            val input = BufferedInputStream(
+                contentResolver.openInputStream(uri)
+                    ?: throw java.io.IOException("Unable to open AIFF")
+            )
+
+            var outputFile: File? = null
+            var output: BufferedOutputStream? = null
+
+            try {
+                val form = ByteArray(4)
+                val formSizeBytes = ByteArray(4)
+                val formType = ByteArray(4)
+                readFully(input, form)
+                readFully(input, formSizeBytes)
+                readFully(input, formType)
+
+                val formText = String(form, Charsets.US_ASCII)
+                val typeText = String(formType, Charsets.US_ASCII)
+                if (formText != "FORM" || (typeText != "AIFF" && typeText != "AIFC")) {
+                    throw java.io.IOException("Not an AIFF file")
+                }
+
+                var channels = 0
+                var sampleRate = 0
+                var bits = 0
+                var compression = "NONE"
+                var audioFound = false
+                var dataSize = 0L
+                var dataOffset = 0L
+
+                while (!audioFound) {
+                    val id = ByteArray(4)
+                    val sizeBytes = ByteArray(4)
+                    try {
+                        readFully(input, id)
+                        readFully(input, sizeBytes)
+                    } catch (_: java.io.EOFException) {
+                        break
+                    }
+
+                    val chunkId = String(id, Charsets.US_ASCII)
+                    val chunkSize = readU32BE(sizeBytes)
+
+                    when (chunkId) {
+                        "COMM" -> {
+                            val common = ByteArray(chunkSize.toInt().coerceAtMost(32))
+                            readFully(input, common)
+                            if (common.size < 18) throw java.io.IOException("Invalid COMM chunk")
+
+                            channels = readU16BE(common.copyOfRange(0, 2))
+                            bits = readU16BE(common.copyOfRange(6, 8))
+                            sampleRate = readIeeeExtended(common.copyOfRange(8, 18)).toInt()
+
+                            if (typeText == "AIFC" && common.size >= 22) {
+                                compression = String(common.copyOfRange(18, 22), Charsets.US_ASCII)
+                                val remaining = chunkSize - common.size
+                                if (remaining > 0) {
+                                    val skip = ByteArray(8192)
+                                    var left = remaining
+                                    while (left > 0) {
+                                        val n = input.read(skip, 0, minOf(skip.size.toLong(), left).toInt())
+                                        if (n < 0) throw java.io.EOFException()
+                                        left -= n
+                                    }
+                                }
+                            } else {
+                                val remaining = chunkSize - common.size
+                                if (remaining > 0) {
+                                    input.skip(remaining)
+                                }
+                            }
+                        }
+
+                        "SSND" -> {
+                            val header = ByteArray(8)
+                            readFully(input, header)
+                            val offset = readU32BE(header.copyOfRange(0, 4))
+                            val remainingAudio = chunkSize - 8L
+                            if (offset > remainingAudio) throw java.io.IOException("Invalid SSND offset")
+
+                            var leftOffset = offset
+                            val skip = ByteArray(8192)
+                            while (leftOffset > 0) {
+                                val n = input.read(skip, 0, minOf(skip.size.toLong(), leftOffset).toInt())
+                                if (n < 0) throw java.io.EOFException()
+                                leftOffset -= n
+                            }
+
+                            dataSize = remainingAudio - offset
+                            if (channels <= 0 || sampleRate <= 0 || bits !in 8..32 || dataSize <= 0) {
+                                throw java.io.IOException("Unsupported AIFF audio format")
+                            }
+                            if (compression != "NONE" && compression != "sowt") {
+                                throw java.io.IOException("Unsupported AIFC compression")
+                            }
+
+                            outputFile = File(cacheDir, "aiff_${System.nanoTime()}.wav")
+                            output = BufferedOutputStream(FileOutputStream(outputFile))
+                            writeWavHeader(output, channels, sampleRate, bits, dataSize)
+
+                            val bytesPerSample = bits / 8
+                            val block = ByteArray(64 * 1024)
+                            var remaining = dataSize
+                            while (remaining > 0) {
+                                val want = minOf(block.size.toLong(), remaining).toInt()
+                                val n = input.read(block, 0, want)
+                                if (n < 0) throw java.io.EOFException()
+
+                                if (compression == "sowt" || bytesPerSample == 1) {
+                                    if (bytesPerSample == 1) {
+                                        for (i in 0 until n) {
+                                            output.write((block[i].toInt() and 0xFF) xor 0x80)
+                                        }
+                                    } else {
+                                        output.write(block, 0, n)
+                                    }
+                                } else {
+                                    var i = 0
+                                    while (i + bytesPerSample <= n) {
+                                        var j = bytesPerSample - 1
+                                        while (j >= 0) {
+                                            output.write(block[i + j].toInt())
+                                            j--
+                                        }
+                                        i += bytesPerSample
+                                    }
+                                    if (i < n) {
+                                        output.write(block, i, n - i)
+                                    }
+                                }
+
+                                remaining -= n
+                            }
+
+                            audioFound = true
+                        }
+
+                        else -> {
+                            var left = chunkSize
+                            val skip = ByteArray(8192)
+                            while (left > 0) {
+                                val n = input.read(skip, 0, minOf(skip.size.toLong(), left).toInt())
+                                if (n < 0) throw java.io.EOFException()
+                                left -= n
+                            }
+                        }
+                    }
+
+                    if (chunkSize % 2L != 0L && !audioFound) {
+                        input.read()
+                    }
+                }
+
+                if (!audioFound || outputFile == null) {
+                    throw java.io.IOException("AIFF audio data not found")
+                }
+
+                output!!.flush()
+                output.close()
+                output = null
+                return outputFile!!
+            } catch (e: Exception) {
+                try { output?.close() } catch (_: Exception) {}
+                outputFile?.delete()
+                throw e
+            } finally {
+                try { input.close() } catch (_: Exception) {}
+            }
+        }
 
         init {
 
