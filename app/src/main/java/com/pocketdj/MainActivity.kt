@@ -15,6 +15,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.io.ByteArrayOutputStream
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -175,6 +176,11 @@ class MainActivity : AppCompatActivity() {
         private val position =
             TextView(this@MainActivity)
 
+        private val bpm =
+            TextView(this@MainActivity)
+
+        private var detectedBpm: Double? = null
+
         private val waveform =
             WaveformView(this@MainActivity)
 
@@ -215,6 +221,9 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 loadedUri = uri
+                detectedBpm = null
+                bpm.text = "BPM --"
+                readBpmFromMetadataAsync(uri)
 
                 player.stop()
                 waveform.reset()
@@ -248,6 +257,125 @@ class MainActivity : AppCompatActivity() {
                     play.isEnabled = true
                 }
             }
+
+        private fun readBpmFromMetadataAsync(uri: Uri) {
+            Thread {
+                val value = try {
+                    readBpmFromMetadata(uri)
+                } catch (_: Exception) {
+                    null
+                }
+
+                bpm.post {
+                    detectedBpm = value
+                    bpm.text = if (value != null) {
+                        "BPM ${formatBpm(value)}"
+                    } else {
+                        "BPM --"
+                    }
+                }
+            }.start()
+        }
+
+        private fun formatBpm(value: Double): String {
+            val rounded = kotlin.math.round(value * 10.0) / 10.0
+            return if (rounded == kotlin.math.round(rounded)) {
+                rounded.toInt().toString()
+            } else {
+                "%.1f".format(rounded)
+            }
+        }
+
+        private fun readBpmFromMetadata(uri: Uri): Double? {
+            val name = uri.lastPathSegment?.lowercase() ?: ""
+            return when {
+                name.endsWith(".mp3") -> readMp3Bpm(uri)
+                name.endsWith(".flac") -> readFlacBpm(uri)
+                name.endsWith(".ogg") || name.endsWith(".oga") -> readVorbisBpm(uri)
+                name.endsWith(".m4a") || name.endsWith(".mp4") -> readMp4Bpm(uri)
+                name.endsWith(".wav") || name.endsWith(".aif") ||
+                    name.endsWith(".aiff") || name.endsWith(".aifc") -> readInfoBpm(uri)
+                else -> null
+            }
+        }
+
+        private fun readAsciiTagValue(bytes: ByteArray, key: String): Double? {
+            val text = String(bytes, Charsets.ISO_8859_1)
+            val regex = Regex("(?i)(?:^|\\u0000|\\n|\\r)" + Regex.escape(key) + "\\s*[:=]\\s*([0-9]{2,3}(?:\\.[0-9]+)?)")
+            val match = regex.find(text) ?: return null
+            return match.groupValues[1].toDoubleOrNull()?.takeIf { it in 20.0..300.0 }
+        }
+
+        private fun readMp3Bpm(uri: Uri): Double? {
+            val input = contentResolver.openInputStream(uri) ?: return null
+            input.use {
+                val header = ByteArray(10)
+                if (it.read(header) != 10) return null
+                if (String(header, 0, 3, Charsets.ISO_8859_1) == "ID3") {
+                    val size = ((header[6].toInt() and 0x7F) shl 21) or
+                        ((header[7].toInt() and 0x7F) shl 14) or
+                        ((header[8].toInt() and 0x7F) shl 7) or
+                        (header[9].toInt() and 0x7F)
+                    val safeSize = minOf(size, 2 * 1024 * 1024)
+                    val data = ByteArray(safeSize)
+                    val n = it.read(data)
+                    if (n > 0) {
+                        val text = String(data, 0, n, Charsets.ISO_8859_1)
+                        Regex("(?i)TBPM[^0-9]{0,8}([0-9]{2,3}(?:\\.[0-9]+)?)").find(text)?.let { m ->
+                            return m.groupValues[1].toDoubleOrNull()?.takeIf { v -> v in 20.0..300.0 }
+                        }
+                    }
+                }
+            }
+            return null
+        }
+
+        private fun readVorbisBpm(uri: Uri): Double? {
+            val input = contentResolver.openInputStream(uri) ?: return null
+            input.use {
+                val data = ByteArray(2 * 1024 * 1024)
+                val n = it.read(data)
+                if (n <= 0) return null
+                val text = String(data, 0, n, Charsets.ISO_8859_1)
+                return Regex("(?i)(?:BPM|TBPM)\\s*=\\s*([0-9]{2,3}(?:\\.[0-9]+)?)").find(text)?.groupValues?.get(1)
+                    ?.toDoubleOrNull()?.takeIf { v -> v in 20.0..300.0 }
+            }
+        }
+
+        private fun readFlacBpm(uri: Uri): Double? = readVorbisBpm(uri)
+
+        private fun readMp4Bpm(uri: Uri): Double? {
+            val input = contentResolver.openInputStream(uri) ?: return null
+            input.use {
+                val data = ByteArray(4 * 1024 * 1024)
+                val n = it.read(data)
+                if (n <= 0) return null
+                // Common iTunes/MP4 tempo atom: tmpo, stored as a 16-bit integer.
+                for (i in 4 until n - 6) {
+                    if (data[i].toInt().toChar() == 't' &&
+                        data[i + 1].toInt().toChar() == 'm' &&
+                        data[i + 2].toInt().toChar() == 'p' &&
+                        data[i + 3].toInt().toChar() == 'o') {
+                        val bpmValue = ((data[i + 4].toInt() and 0xFF) shl 8) or
+                            (data[i + 5].toInt() and 0xFF)
+                        if (bpmValue in 20..300) return bpmValue.toDouble()
+                    }
+                }
+                return null
+            }
+        }
+
+        private fun readInfoBpm(uri: Uri): Double? {
+            // Lightweight fallback for textual BPM tags in WAV/AIFF metadata chunks.
+            // We only inspect the first 2 MB, so loading a large recording remains cheap.
+            val input = contentResolver.openInputStream(uri) ?: return null
+            input.use {
+                val data = ByteArray(2 * 1024 * 1024)
+                val n = it.read(data)
+                if (n <= 0) return null
+                return readAsciiTagValue(data.copyOf(n), "BPM")
+            }
+        }
 
         private fun preparePlayableUri(
             uri: Uri,
@@ -582,6 +710,21 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     24
+                )
+            )
+
+            bpm.apply {
+                text = "BPM --"
+                textSize = 16f
+                setTextColor(Color.CYAN)
+                gravity = Gravity.CENTER
+            }
+
+            panel.addView(
+                bpm,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    25
                 )
             )
 
@@ -1187,6 +1330,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         fun updateDisplay() {
+
+            detectedBpm?.let { originalBpm ->
+                val liveBpm = originalBpm *
+                    min(2.0, max(0.1, baseSpeed.toDouble() + bendAmount.toDouble()))
+                bpm.text = "BPM ${formatBpm(liveBpm)}"
+            }
 
             val duration =
                 player.duration
