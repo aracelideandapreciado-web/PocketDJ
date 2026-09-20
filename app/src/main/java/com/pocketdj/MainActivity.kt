@@ -45,7 +45,7 @@ class MainActivity : AppCompatActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
 
-    private var masterVolume = 0.85f
+    private var masterVolume = 1f
     private var limiterEnabled = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -149,19 +149,21 @@ class MainActivity : AppCompatActivity() {
         )
 
         val masterLabel = TextView(this).apply {
-            text = "MASTER 85% • LIMITER ON"
+            text = "MASTER 100%"
             gravity = Gravity.CENTER
             textSize = 11f
             setTextColor(Color.GRAY)
         }
 
         root.addView(masterLabel, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 22
-        ))
+            LinearLayout.LayoutParams.MATCH_PARENT, 24
+        ).apply {
+            setMargins(0, 10, 0, 2)
+        })
 
         val master = SeekBar(this).apply {
-            max = 85
-            progress = 85
+            max = 100
+            progress = 100
         }
 
         master.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -169,15 +171,17 @@ class MainActivity : AppCompatActivity() {
                 masterVolume = progress / 100f
                 deckA.setMasterVolume(masterVolume)
                 deckB.setMasterVolume(masterVolume)
-                masterLabel.text = "MASTER ${(masterVolume * 100f).roundToInt()}% • LIMITER ON"
+                masterLabel.text = "MASTER ${(masterVolume * 100f).roundToInt()}%"
             }
             override fun onStartTrackingTouch(bar: SeekBar?) {}
             override fun onStopTrackingTouch(bar: SeekBar?) {}
         })
 
         root.addView(master, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 38
-        ))
+            LinearLayout.LayoutParams.MATCH_PARENT, 42
+        ).apply {
+            setMargins(0, 0, 0, 4)
+        })
     }
 
     inner class Deck(
@@ -195,7 +199,7 @@ class MainActivity : AppCompatActivity() {
 
         private var channelVolume = 1f
         private var mixerVolume = 0.707f
-        private var masterVolumeForDeck = 0.85f
+        private var masterVolumeForDeck = 1f
 
         private var baseSpeed = 1f
         private var bendAmount = 0f
@@ -204,6 +208,7 @@ class MainActivity : AppCompatActivity() {
         private var originalBassLevels = ShortArray(0)
         private var deckLocked = false
         private var reverseMode = false
+        private var reversePosition = 0L
         private var cueHeld = false
         private var cueTouchDown = false
         private val reverseHandler = Handler(Looper.getMainLooper())
@@ -211,17 +216,19 @@ class MainActivity : AppCompatActivity() {
             override fun run() {
                 if (!reverseMode || deckLocked || loadedUri == null) return
 
-                val newPosition =
-                    (player.currentPosition - 120L).coerceAtLeast(0L)
+                reversePosition =
+                    (reversePosition - 160L).coerceAtLeast(0L)
 
-                player.seekTo(newPosition)
+                player.seekTo(reversePosition)
 
-                if (newPosition <= 0L) {
+                if (reversePosition <= 0L) {
                     reverseMode = false
+                    reverse.text = "REV"
+                    play.text = "PLAY"
                     return
                 }
 
-                reverseHandler.postDelayed(this, 60L)
+                reverseHandler.postDelayed(this, 50L)
             }
         }
 
@@ -1168,13 +1175,18 @@ class MainActivity : AppCompatActivity() {
                     reverseMode = false
                     reverseHandler.removeCallbacks(reverseStep)
                     reverse.text = "REV"
+                    play.text = "PLAY"
                     return@setOnClickListener
                 }
 
+                // Media3/ExoPlayer does not provide native reverse audio playback.
+                // REV therefore performs a reliable reverse scrub of the playhead.
+                // Keep our own position so repeated seekTo() calls cannot stall.
+                reversePosition = player.currentPosition.coerceAtLeast(0L)
                 player.pause()
                 play.text = "PLAY"
                 reverseMode = true
-                reverse.text = "REV ▶"
+                reverse.text = "REV ◀"
                 reverseHandler.removeCallbacks(reverseStep)
                 reverseHandler.post(reverseStep)
             }
