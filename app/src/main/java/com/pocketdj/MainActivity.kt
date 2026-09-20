@@ -593,7 +593,7 @@ class MainActivity : AppCompatActivity() {
                 waveform,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    55
+                    220
                 )
             )
 
@@ -1360,7 +1360,7 @@ class MainActivity : AppCompatActivity() {
                 } else -1L
                 if (durationUs <= 0L) return FloatArray(0)
 
-                val output = FloatArray(160)
+                val output = FloatArray(320)
                 var sampleRate = if (format.containsKey(android.media.MediaFormat.KEY_SAMPLE_RATE)) {
                     format.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
                 } else 48_000
@@ -1480,18 +1480,20 @@ class MainActivity : AppCompatActivity() {
             val h =
                 height.toFloat()
 
-            paint.color =
-                Color.rgb(35, 35, 35)
-
+            // Subtle waveform grid.
+            paint.color = Color.rgb(28, 28, 28)
             paint.strokeWidth = 1f
 
-            canvas.drawLine(
-                0f,
-                h / 2f,
-                w,
-                h / 2f,
-                paint
-            )
+            for (i in 1..7) {
+                val x = w * i / 8f
+                canvas.drawLine(x, 0f, x, h, paint)
+            }
+
+            canvas.drawLine(0f, h / 2f, w, h / 2f, paint)
+
+            // A second horizontal guide makes the larger waveform easier to read.
+            canvas.drawLine(0f, h * 0.25f, w, h * 0.25f, paint)
+            canvas.drawLine(0f, h * 0.75f, w, h * 0.75f, paint)
 
             if (loading) {
 
@@ -1526,7 +1528,7 @@ class MainActivity : AppCompatActivity() {
                 paint.color =
                     Color.rgb(0, 200, 220)
 
-                paint.strokeWidth = 2f
+                paint.strokeWidth = 3f
 
                 val barWidth =
                     w / samples.size
