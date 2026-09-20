@@ -224,7 +224,6 @@ class MainActivity : AppCompatActivity() {
                 if (reversePosition <= 0L) {
                     reverseMode = false
                     reverse.text = "REV"
-                    play.text = "PLAY"
                     return
                 }
 
@@ -252,6 +251,9 @@ class MainActivity : AppCompatActivity() {
 
         private val seek =
             SeekBar(this@MainActivity)
+
+        private val startButton =
+            Button(this@MainActivity)
 
         private val speed =
             SeekBar(this@MainActivity)
@@ -1130,13 +1132,38 @@ class MainActivity : AppCompatActivity() {
                 }
             )
 
-            panel.addView(
-                seek,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    32
-                )
+            val seekRow =
+                LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+
+            startButton.text = "◀"
+            styleButton(startButton)
+            startButton.contentDescription = "Go to beginning"
+
+            startButton.setOnClickListener {
+                if (deckLocked || loadedUri == null) return@setOnClickListener
+
+                player.seekTo(0L)
+
+                // Keep playback state unchanged.
+                play.text = if (player.isPlaying) "PAUSE" else "PLAY"
+            }
+
+            seekRow.addView(
+                startButton,
+                LinearLayout.LayoutParams(52, 32).apply {
+                    setMargins(2, 0, 4, 0)
+                }
             )
+
+            seekRow.addView(
+                seek,
+                LinearLayout.LayoutParams(0, 32, 1f)
+            )
+
+            panel.addView(seekRow)
 
             val controls =
                 LinearLayout(this@MainActivity).apply {
@@ -1183,10 +1210,9 @@ class MainActivity : AppCompatActivity() {
                 // REV therefore performs a reliable reverse scrub of the playhead.
                 // Keep our own position so repeated seekTo() calls cannot stall.
                 reversePosition = player.currentPosition.coerceAtLeast(0L)
-                player.pause()
-                play.text = "PLAY"
                 reverseMode = true
                 reverse.text = "REV ◀"
+                play.text = if (player.isPlaying) "PAUSE" else "PLAY"
                 reverseHandler.removeCallbacks(reverseStep)
                 reverseHandler.post(reverseStep)
             }
@@ -1204,6 +1230,7 @@ class MainActivity : AppCompatActivity() {
                     play.isEnabled = false
                     cue.isEnabled = false
                     seek.isEnabled = false
+                    startButton.isEnabled = false
                     reverseMode = false
                     reverseHandler.removeCallbacks(reverseStep)
                     reverse.text = "REV"
@@ -1217,6 +1244,7 @@ class MainActivity : AppCompatActivity() {
                     play.isEnabled = loadedUri != null
                     cue.isEnabled = loadedUri != null
                     seek.isEnabled = loadedUri != null
+                    startButton.isEnabled = loadedUri != null
                     reverse.isEnabled = loadedUri != null
                 }
             }
@@ -1428,6 +1456,7 @@ class MainActivity : AppCompatActivity() {
             play.isEnabled = loadedUri != null
             cue.isEnabled = loadedUri != null
             seek.isEnabled = loadedUri != null
+            startButton.isEnabled = loadedUri != null
             reverse.isEnabled = loadedUri != null
 
             val pitchTitle =
