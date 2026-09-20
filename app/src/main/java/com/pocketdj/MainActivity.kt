@@ -186,6 +186,9 @@ class MainActivity : AppCompatActivity() {
         private val bass =
             Button(this@MainActivity)
 
+        private val pitchReset =
+            Button(this@MainActivity)
+
         private val picker =
             registerForActivityResult(
                 ActivityResultContracts.OpenDocument()
@@ -382,6 +385,9 @@ class MainActivity : AppCompatActivity() {
 
             bass.text = "BASS"
             styleButton(bass)
+
+            pitchReset.text = "RESET"
+            styleButton(pitchReset)
 
             load.setOnClickListener {
 
@@ -628,6 +634,13 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            pitchReset.setOnClickListener {
+                baseSpeed = 1f
+                bendAmount = 0f
+                speed.progress = 50
+                applySpeed()
+            }
+
             pitchRow.addView(
                 bendDown,
                 LinearLayout.LayoutParams(
@@ -642,6 +655,14 @@ class MainActivity : AppCompatActivity() {
                     0,
                     42,
                     1f
+                )
+            )
+
+            pitchRow.addView(
+                pitchReset,
+                LinearLayout.LayoutParams(
+                    58,
+                    42
                 )
             )
 
@@ -957,52 +978,146 @@ class MainActivity : AppCompatActivity() {
         ): FloatArray {
 
             /*
-             * Try to obtain actual audio waveform information
-             * from the file through MediaMetadataRetriever.
-             *
-             * If the device cannot expose decoded waveform data
-             * for a particular compressed format, we still leave
-             * the display empty rather than showing a fake waveform.
+             * Decode audio in small buffers and keep only 160 peak values.
+             * Long recordings therefore do not need to be loaded into RAM.
              */
-
-            val retriever =
-                android.media.MediaMetadataRetriever()
+            val extractor = android.media.MediaExtractor()
+            var decoder: android.media.MediaCodec? = null
 
             try {
-
-                retriever.setDataSource(
-                    context,
-                    uri
-                )
-
-                val durationMs =
-                    retriever.extractMetadata(
-                        android.media.MediaMetadataRetriever
-                            .METADATA_KEY_DURATION
-                    )?.toLongOrNull()
-                        ?: return FloatArray(0)
-
-                if (durationMs <= 0) {
-                    return FloatArray(0)
+                val descriptor = context.contentResolver.openFileDescriptor(uri, "r")
+                    ?: return FloatArray(0)
+                try {
+                    extractor.setDataSource(descriptor.fileDescriptor)
+                } finally {
+                    descriptor.close()
                 }
 
-                val count = 160
+                var trackIndex = -1
+                for (i in 0 until extractor.trackCount) {
+                    val trackFormat = extractor.getTrackFormat(i)
+                    val trackMime = trackFormat.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+                    if (trackMime.startsWith("audio/")) {
+                        trackIndex = i
+                        break
+                    }
+                }
+                if (trackIndex < 0) return FloatArray(0)
 
-                val output =
-                    FloatArray(count)
+                extractor.selectTrack(trackIndex)
+                val format = extractor.getTrackFormat(trackIndex)
+                val mime = format.getString(android.media.MediaFormat.KEY_MIME)
+                    ?: return FloatArray(0)
+                val durationUs = if (format.containsKey(android.media.MediaFormat.KEY_DURATION)) {
+                    format.getLong(android.media.MediaFormat.KEY_DURATION)
+                } else -1L
+                if (durationUs <= 0L) return FloatArray(0)
 
-                /*
-                 * Audio files do not necessarily contain video
-                 * frames, so this path is only useful where Android
-                 * exposes frames.
-                 *
-                 * Never create a fake waveform.
-                 */
+                val output = FloatArray(160)
+                var sampleRate = if (format.containsKey(android.media.MediaFormat.KEY_SAMPLE_RATE)) {
+                    format.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
+                } else 48_000
+                var channels = if (format.containsKey(android.media.MediaFormat.KEY_CHANNEL_COUNT)) {
+                    format.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
+                } else 2
+                channels = channels.coerceAtLeast(1)
+                val totalFrames = ((durationUs * sampleRate) / 1_000_000L).coerceAtLeast(1L)
+
+                fun addPcm16Samples(buffer: java.nio.ByteBuffer, presentationTimeUs: Long) {
+                    val bytesPerFrame = 2 * channels
+                    var frameIndex = ((presentationTimeUs.coerceAtLeast(0L) * sampleRate) / 1_000_000L)
+                    while (buffer.remaining() >= bytesPerFrame) {
+                        var peak = 0f
+                        repeat(channels) {
+                            val lo = buffer.get().toInt() and 0xFF
+                            val hi = buffer.get().toInt()
+                            val sample = ((hi shl 8) or lo).toShort().toInt()
+                            peak = max(peak, abs(sample / 32768f))
+                        }
+                        val bin = ((frameIndex * output.size) / totalFrames)
+                            .toInt().coerceIn(0, output.lastIndex)
+                        if (peak > output[bin]) output[bin] = peak
+                        frameIndex++
+                    }
+                }
+
+                /* WAV/AIFF PCM can be exposed directly by MediaExtractor. */
+                if (mime == "audio/raw") {
+                    while (true) {
+                        val buffer = java.nio.ByteBuffer.allocateDirect(64 * 1024)
+                        val size = extractor.readSampleData(buffer, 0)
+                        if (size < 0) break
+                        buffer.limit(size)
+                        val time = extractor.sampleTime
+                        addPcm16Samples(buffer, time)
+                        if (!extractor.advance()) break
+                    }
+                    return output
+                }
+
+                val codec = android.media.MediaCodec.createDecoderByType(mime)
+                decoder = codec
+                codec.configure(format, null, null, 0)
+                codec.start()
+
+                val bufferInfo = android.media.MediaCodec.BufferInfo()
+                var inputDone = false
+                var outputDone = false
+
+                while (!outputDone) {
+                    if (!inputDone) {
+                        val inputIndex = codec.dequeueInputBuffer(10_000L)
+                        if (inputIndex >= 0) {
+                            val inputBuffer = codec.getInputBuffer(inputIndex)
+                            if (inputBuffer != null) {
+                                inputBuffer.clear()
+                                val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                                if (sampleSize < 0) {
+                                    codec.queueInputBuffer(inputIndex, 0, 0, 0L,
+                                        android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                    inputDone = true
+                                } else {
+                                    codec.queueInputBuffer(inputIndex, 0, sampleSize, extractor.sampleTime, 0)
+                                    extractor.advance()
+                                }
+                            }
+                        }
+                    }
+
+                    val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000L)
+                    when {
+                        outputIndex == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            val out = codec.outputFormat
+                            if (out.containsKey(android.media.MediaFormat.KEY_SAMPLE_RATE)) {
+                                sampleRate = out.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
+                            }
+                            if (out.containsKey(android.media.MediaFormat.KEY_CHANNEL_COUNT)) {
+                                channels = out.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+                            }
+                        }
+                        outputIndex >= 0 -> {
+                            val outputBuffer = codec.getOutputBuffer(outputIndex)
+                            if (outputBuffer != null && bufferInfo.size > 0) {
+                                val start = bufferInfo.offset.coerceIn(0, outputBuffer.capacity())
+                                val end = (bufferInfo.offset + bufferInfo.size)
+                                    .coerceIn(start, outputBuffer.capacity())
+                                outputBuffer.position(start)
+                                outputBuffer.limit(end)
+                                addPcm16Samples(outputBuffer, bufferInfo.presentationTimeUs)
+                            }
+
+                            val eos = (bufferInfo.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+                            codec.releaseOutputBuffer(outputIndex, false)
+                            if (eos) outputDone = true
+                        }
+                    }
+                }
+
                 return output
-
             } finally {
-
-                retriever.release()
+                try { decoder?.stop() } catch (_: Exception) {}
+                try { decoder?.release() } catch (_: Exception) {}
+                try { extractor.release() } catch (_: Exception) {}
             }
         }
 
