@@ -166,6 +166,7 @@ class MainActivity : AppCompatActivity() {
         private var bassCutEnabled = false
         private var equalizer: Equalizer? = null
         private var originalBassLevels = ShortArray(0)
+        private var deckLocked = false
 
         private var cuePosition = 0L
 
@@ -209,6 +210,9 @@ class MainActivity : AppCompatActivity() {
         private val pitchPercent =
             TextView(this@MainActivity)
 
+        private val lockButton =
+            Button(this@MainActivity)
+
         private val picker =
             registerForActivityResult(
                 ActivityResultContracts.OpenDocument()
@@ -233,6 +237,8 @@ class MainActivity : AppCompatActivity() {
                 waveform.reset()
                 play.text = "LOADING"
                 play.isEnabled = false
+                cue.isEnabled = false
+                seek.isEnabled = false
 
                 val displayName =
                     uri.lastPathSegment
@@ -262,7 +268,9 @@ class MainActivity : AppCompatActivity() {
                         estimateBpmAsync(playableUri)
                     }
                     play.text = "PLAY"
-                    play.isEnabled = true
+                    play.isEnabled = !deckLocked
+                    cue.isEnabled = !deckLocked
+                    seek.isEnabled = !deckLocked
                 }
             }
 
@@ -1027,6 +1035,7 @@ class MainActivity : AppCompatActivity() {
 
                         if (
                             fromUser &&
+                            !deckLocked &&
                             player.duration > 0
                         ) {
 
@@ -1081,10 +1090,40 @@ class MainActivity : AppCompatActivity() {
             bass.text = "BASS"
             styleButton(bass)
 
+            lockButton.text = "LOCK"
+            styleButton(lockButton)
+
             pitchReset.text = "RESET"
             styleButton(pitchReset)
 
+            lockButton.setOnClickListener {
+
+                deckLocked = !deckLocked
+
+                if (deckLocked) {
+                    lockButton.text = "UNLOCK"
+                    lockButton.setTextColor(Color.BLACK)
+                    lockButton.setBackgroundColor(Color.rgb(255, 190, 0))
+
+                    load.isEnabled = false
+                    play.isEnabled = false
+                    cue.isEnabled = false
+                    seek.isEnabled = false
+                } else {
+                    lockButton.text = "LOCK"
+                    lockButton.setTextColor(Color.WHITE)
+                    lockButton.setBackgroundColor(Color.rgb(45, 45, 45))
+
+                    load.isEnabled = true
+                    play.isEnabled = loadedUri != null
+                    cue.isEnabled = loadedUri != null
+                    seek.isEnabled = loadedUri != null
+                }
+            }
+
             load.setOnClickListener {
+
+                if (deckLocked) return@setOnClickListener
 
                 picker.launch(
                     arrayOf(
@@ -1104,6 +1143,8 @@ class MainActivity : AppCompatActivity() {
             }
 
             play.setOnClickListener {
+
+                if (deckLocked) return@setOnClickListener
 
                 if (player.isPlaying) {
 
@@ -1126,6 +1167,8 @@ class MainActivity : AppCompatActivity() {
             }
 
             cue.setOnTouchListener { _, event ->
+
+                if (deckLocked) return@setOnTouchListener true
 
                 when (event.action) {
 
@@ -1205,6 +1248,15 @@ class MainActivity : AppCompatActivity() {
             )
 
             controls.addView(
+                lockButton,
+                LinearLayout.LayoutParams(
+                    0,
+                    56,
+                    1f
+                ).apply { setMargins(2, 2, 2, 2) }
+            )
+
+            controls.addView(
                 bass,
                 LinearLayout.LayoutParams(
                     0,
@@ -1214,6 +1266,10 @@ class MainActivity : AppCompatActivity() {
             )
 
             panel.addView(controls)
+
+            play.isEnabled = loadedUri != null
+            cue.isEnabled = loadedUri != null
+            seek.isEnabled = loadedUri != null
 
             val pitchTitle =
                 TextView(this@MainActivity).apply {
