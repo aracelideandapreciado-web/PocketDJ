@@ -209,6 +209,7 @@ class MainActivity : AppCompatActivity() {
         private var deckLocked = false
         private var reverseMode = false
         private var reversePosition = 0L
+        private var reverseWasPlaying = false
         private var cueHeld = false
         private var cueTouchDown = false
         private val reverseHandler = Handler(Looper.getMainLooper())
@@ -217,9 +218,13 @@ class MainActivity : AppCompatActivity() {
                 if (!reverseMode || deckLocked || loadedUri == null) return
 
                 reversePosition =
-                    (reversePosition - 160L).coerceAtLeast(0L)
+                    (reversePosition - 400L).coerceAtLeast(0L)
 
                 player.seekTo(reversePosition)
+
+                if (reverseWasPlaying && !player.isPlaying) {
+                    player.play()
+                }
 
                 if (reversePosition <= 0L) {
                     reverseMode = false
@@ -227,7 +232,7 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
 
-                reverseHandler.postDelayed(this, 50L)
+                reverseHandler.postDelayed(this, 80L)
             }
         }
 
@@ -1145,10 +1150,21 @@ class MainActivity : AppCompatActivity() {
             startButton.setOnClickListener {
                 if (deckLocked || loadedUri == null) return@setOnClickListener
 
+                val wasPlaying = player.isPlaying
+
+                reverseMode = false
+                reverseHandler.removeCallbacks(reverseStep)
+                reverse.text = "REV"
+
                 player.seekTo(0L)
 
-                // Keep playback state unchanged.
-                play.text = if (player.isPlaying) "PAUSE" else "PLAY"
+                if (wasPlaying) {
+                    player.play()
+                    play.text = "PAUSE"
+                } else {
+                    player.pause()
+                    play.text = "PLAY"
+                }
             }
 
             seekRow.addView(
@@ -1210,9 +1226,18 @@ class MainActivity : AppCompatActivity() {
                 // REV therefore performs a reliable reverse scrub of the playhead.
                 // Keep our own position so repeated seekTo() calls cannot stall.
                 reversePosition = player.currentPosition.coerceAtLeast(0L)
+                reverseWasPlaying = player.isPlaying
                 reverseMode = true
                 reverse.text = "REV ◀"
-                play.text = if (player.isPlaying) "PAUSE" else "PLAY"
+
+                if (reverseWasPlaying) {
+                    player.play()
+                    play.text = "PAUSE"
+                } else {
+                    player.pause()
+                    play.text = "PLAY"
+                }
+
                 reverseHandler.removeCallbacks(reverseStep)
                 reverseHandler.post(reverseStep)
             }
