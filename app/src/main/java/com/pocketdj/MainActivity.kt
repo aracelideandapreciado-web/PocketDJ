@@ -1,1066 +1,947 @@
 package com.pocketdj
 
- import android.content.Intent\
- import android.graphics.Canvas\
- import android.graphics.Color\
- import android.graphics.Paint\
- import android.graphics.RectF\
- import android.media.AudioFormat\
- import android.media.AudioRecord\
- import android.media.MediaRecorder\
- import android.net.Uri\
- import android.os.Bundle\
- import android.os.Handler\
- import android.os.Looper\
- import android.view.Gravity\
- import android.view.MotionEvent\
- import android.view.View\
- import android.widget.Button\
- import android.widget.LinearLayout\
- import android.widget.SeekBar\
- import android.widget.TextView\
- import androidx.activity.result.contract.ActivityResultContracts\
- import androidx.appcompat.app.AppCompatActivity\
- import androidx.media3.common.AudioAttributes\
- import androidx.media3.common.C\
- import androidx.media3.common.MediaItem\
- import androidx.media3.common.PlaybackParameters\
- import androidx.media3.exoplayer.ExoPlayer\
- import kotlin.math.abs\
- import kotlin.math.max\
- import kotlin.math.min\
- import kotlin.math.sin
+import android.content.Intent
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.net.Uri
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.SeekBar
+import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.exoplayer.ExoPlayer
+import kotlin.math.max
+import kotlin.math.min
 
- class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity() {
 
-```
-private lateinit var deckA: Deck
-private lateinit var deckB: Deck
-```
+    private lateinit var deckA: Deck
+    private lateinit var deckB: Deck
 
-```
-private val handler = Handler(Looper.getMainLooper())
-```
+    private val handler = Handler(Looper.getMainLooper())
 
-```
-override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
-```
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
 
-```
-    window.statusBarColor = Color.rgb(8, 8, 8)
-    window.navigationBarColor = Color.rgb(8, 8, 8)
-```
+        window.statusBarColor = Color.rgb(8, 8, 8)
+        window.navigationBarColor = Color.rgb(8, 8, 8)
 
-```
-    val root = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(8, 4, 8, 4)
-        setBackgroundColor(Color.rgb(9, 9, 9))
-    }
-```
-
-```
-    val title = TextView(this).apply {
-        text = "POCKET DJ"
-        textSize = 18f
-        gravity = Gravity.CENTER
-        setTextColor(Color.WHITE)
-        setPadding(0, 4, 0, 4)
-    }
-```
-
-```
-    root.addView(
-        title,
-        LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            38
-        )
-    )
-```
-
-```
-    deckA = Deck("A", root)
-    deckB = Deck("B", root)
-```
-
-```
-    addMixer(root)
-```
-
-```
-    setContentView(root)
-```
-
-```
-    startDisplayUpdates()
-}
-```
-
-```
-private fun addMixer(root: LinearLayout) {
-    val separator = View(this).apply {
-        setBackgroundColor(Color.rgb(50, 50, 50))
-    }
-```
-
-```
-    root.addView(
-        separator,
-        LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            1
-        )
-    )
-```
-
-```
-    val label = TextView(this).apply {
-        text = "CROSSFADER"
-        gravity = Gravity.CENTER
-        textSize = 11f
-        setTextColor(Color.GRAY)
-    }
-```
-
-```
-    root.addView(
-        label,
-        LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            24
-        )
-    )
-```
-
-```
-    val crossfader = SeekBar(this).apply {
-        max = 100
-        progress = 50
-    }
-```
-
-```
-    crossfader.setOnSeekBarChangeListener(
-        object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(
-                seekBar: SeekBar?,
-                progress: Int,
-                fromUser: Boolean
-            ) {
-                val x = progress / 100f
-                val a = kotlin.math.cos(x * Math.PI / 2.0).toFloat()
-                val b = kotlin.math.sin(x * Math.PI / 2.0).toFloat()
-```
-
-```
-                deckA.setMixerVolume(a)
-                deckB.setMixerVolume(b)
-            }
-```
-
-```
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-        }
-    )
-```
-
-```
-    root.addView(
-        crossfader,
-        LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            42
-        )
-    )
-}
-```
-
-```
-private fun startDisplayUpdates() {
-    handler.post(object : Runnable {
-        override fun run() {
-            deckA.updateDisplay()
-            deckB.updateDisplay()
-            handler.postDelayed(this, 100)
-        }
-    })
-}
-```
-
-```
-inner class Deck(
-    private val name: String,
-    parent: LinearLayout
-) {
-```
-
-```
-    private val player =
-        ExoPlayer.Builder(this@MainActivity).build()
-```
-
-```
-    private var channelVolume = 1f
-    private var mixerVolume = 0.707f
-```
-
-```
-    private var baseSpeed = 1.0f
-    private var bendAmount = 0.0f
-```
-
-```
-    private var cuePosition = 0L
-    private var bassCut = false
-```
-
-```
-    private val trackName = TextView(this@MainActivity)
-    private val position = TextView(this@MainActivity)
-    private val waveform = WaveformView(this@MainActivity)
-```
-
-```
-    private val seek = SeekBar(this@MainActivity)
-    private val speed = SeekBar(this@MainActivity)
-    private val volume = SeekBar(this@MainActivity)
-```
-
-```
-    private val play = Button(this@MainActivity)
-    private val cue = Button(this@MainActivity)
-    private val bass = Button(this@MainActivity)
-```
-
-```
-    private val picker =
-        registerForActivityResult(
-            ActivityResultContracts.OpenDocument()
-        ) { uri: Uri? ->
-```
-
-```
-            if (uri == null) return@registerForActivityResult
-```
-
-```
-            try {
-                contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (_: Exception) {
-            }
-```
-
-```
-            player.stop()
-            player.clearMediaItems()
-```
-
-```
-            player.setMediaItem(MediaItem.fromUri(uri))
-            player.prepare()
-```
-
-```
-            trackName.text =
-                uri.lastPathSegment
-                    ?.substringAfterLast("/")
-                    ?: "Audio file"
-```
-
-```
-            cuePosition = 0L
-            waveform.reset()
-            play.text = "PLAY"
-        }
-```
-
-```
-    init {
-        player.setAudioAttributes(
-            AudioAttributes.Builder()
-                .setUsage(C.USAGE_MEDIA)
-                .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                .build(),
-            true
-        )
-```
-
-```
-        createUI(parent)
-    }
-```
-
-```
-    private fun createUI(parent: LinearLayout) {
-```
-
-```
-        val panel = LinearLayout(this@MainActivity).apply {
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(8, 3, 8, 3)
-            setBackgroundColor(Color.rgb(22, 22, 22))
+            setPadding(8, 4, 8, 4)
+            setBackgroundColor(Color.rgb(9, 9, 9))
         }
-```
 
-```
-        val heading = TextView(this@MainActivity).apply {
-            text = "DECK $name"
-            textSize = 16f
-            setTextColor(Color.CYAN)
-            gravity = Gravity.CENTER_VERTICAL
-        }
-```
-
-```
-        panel.addView(
-            heading,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                28
-            )
-        )
-```
-
-```
-        trackName.apply {
-            text = "No track loaded"
-            textSize = 12f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER_VERTICAL
-        }
-```
-
-```
-        panel.addView(
-            trackName,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                25
-            )
-        )
-```
-
-```
-        waveform.setBackgroundColor(Color.rgb(5, 5, 5))
-```
-
-```
-        panel.addView(
-            waveform,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                52
-            )
-        )
-```
-
-```
-        position.apply {
-            text = "00:00 / 00:00"
-            textSize = 10f
-            setTextColor(Color.GRAY)
+        val title = TextView(this).apply {
+            text = "POCKET DJ"
+            textSize = 18f
             gravity = Gravity.CENTER
-        }
-```
-
-```
-        panel.addView(
-            position,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                20
-            )
-        )
-```
-
-```
-        seek.max = 1000
-```
-
-```
-        seek.setOnSeekBarChangeListener(
-            object : SeekBar.OnSeekBarChangeListener {
-```
-
-```
-                override fun onProgressChanged(
-                    bar: SeekBar?,
-                    progress: Int,
-                    fromUser: Boolean
-                ) {
-                    if (fromUser && player.duration > 0) {
-                        val newPosition =
-                            player.duration * progress / 1000L
-```
-
-```
-                        player.seekTo(newPosition)
-                        cuePosition = newPosition
-                    }
-                }
-```
-
-```
-                override fun onStartTrackingTouch(bar: SeekBar?) {}
-                override fun onStopTrackingTouch(bar: SeekBar?) {}
-            }
-        )
-```
-
-```
-        panel.addView(
-            seek,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                34
-            )
-        )
-```
-
-```
-        val controls =
-            LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-```
-
-```
-        val load = makeButton("LOAD")
-```
-
-```
-        play.text = "PLAY"
-        styleButton(play)
-```
-
-```
-        cue.text = "CUE"
-        styleButton(cue)
-```
-
-```
-        bass.text = "BASS"
-        styleButton(bass)
-```
-
-```
-        load.setOnClickListener {
-            picker.launch(
-                arrayOf(
-                    "audio/wav",
-                    "audio/x-wav",
-                    "audio/aiff",
-                    "audio/x-aiff",
-                    "audio/aac",
-                    "audio/mp4",
-                    "audio/mpeg",
-                    "audio/*"
-                )
-            )
-        }
-```
-
-```
-        play.setOnClickListener {
-            if (player.isPlaying) {
-                player.pause()
-                play.text = "PLAY"
-            } else {
-                player.play()
-                play.text = "PAUSE"
-            }
-        }
-```
-
-```
-        cue.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    player.seekTo(cuePosition)
-                    player.play()
-                    cue.text = "CUE ▶"
-                    true
-                }
-```
-
-```
-                MotionEvent.ACTION_UP,
-                MotionEvent.ACTION_CANCEL -> {
-                    player.pause()
-                    player.seekTo(cuePosition)
-                    cue.text = "CUE"
-                    true
-                }
-```
-
-```
-                else -> true
-            }
-        }
-```
-
-```
-        bass.setOnClickListener {
-            bassCut = !bassCut
-```
-
-```
-            if (bassCut) {
-                bass.text = "BASS CUT"
-                bass.setTextColor(Color.BLACK)
-                bass.setBackgroundColor(Color.rgb(255, 190, 0))
-            } else {
-                bass.text = "BASS"
-                bass.setTextColor(Color.WHITE)
-                bass.setBackgroundColor(Color.rgb(45, 45, 45))
-            }
-        }
-```
-
-```
-        controls.addView(
-            load,
-            LinearLayout.LayoutParams(0, 46, 1f)
-        )
-```
-
-```
-        controls.addView(
-            play,
-            LinearLayout.LayoutParams(0, 46, 1f)
-        )
-```
-
-```
-        controls.addView(
-            cue,
-            LinearLayout.LayoutParams(0, 46, 1f)
-        )
-```
-
-```
-        controls.addView(
-            bass,
-            LinearLayout.LayoutParams(0, 46, 1f)
-        )
-```
-
-```
-        panel.addView(controls)
-```
-
-```
-        val pitchTitle =
-            TextView(this@MainActivity).apply {
-                text = "PITCH"
-                textSize = 10f
-                setTextColor(Color.GRAY)
-            }
-```
-
-```
-        panel.addView(
-            pitchTitle,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                18
-            )
-        )
-```
-
-```
-        val pitchRow =
-            LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-```
-
-```
-        val bendDown = makeButton("−")
-        val bendUp = makeButton("+")
-```
-
-```
-        speed.max = 100
-        speed.progress = 50
-```
-
-```
-        speed.setOnSeekBarChangeListener(
-            object : SeekBar.OnSeekBarChangeListener {
-```
-
-```
-                override fun onProgressChanged(
-                    bar: SeekBar?,
-                    progress: Int,
-                    fromUser: Boolean
-                ) {
-                    baseSpeed = 0.5f + progress / 100f
-                    applySpeed()
-                }
-```
-
-```
-                override fun onStartTrackingTouch(bar: SeekBar?) {}
-                override fun onStopTrackingTouch(bar: SeekBar?) {}
-            }
-        )
-```
-
-```
-        bendDown.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    bendAmount = -0.04f
-                    applySpeed()
-                    true
-                }
-```
-
-```
-                MotionEvent.ACTION_UP,
-                MotionEvent.ACTION_CANCEL -> {
-                    bendAmount = 0f
-                    applySpeed()
-                    true
-                }
-```
-
-```
-                else -> true
-            }
-        }
-```
-
-```
-        bendUp.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    bendAmount = 0.04f
-                    applySpeed()
-                    true
-                }
-```
-
-```
-                MotionEvent.ACTION_UP,
-                MotionEvent.ACTION_CANCEL -> {
-                    bendAmount = 0f
-                    applySpeed()
-                    true
-                }
-```
-
-```
-                else -> true
-            }
-        }
-```
-
-```
-        pitchRow.addView(
-            bendDown,
-            LinearLayout.LayoutParams(52, 42)
-        )
-```
-
-```
-        pitchRow.addView(
-            speed,
-            LinearLayout.LayoutParams(0, 42, 1f)
-        )
-```
-
-```
-        pitchRow.addView(
-            bendUp,
-            LinearLayout.LayoutParams(52, 42)
-        )
-```
-
-```
-        panel.addView(pitchRow)
-```
-
-```
-        val pitchRange =
-            TextView(this@MainActivity).apply {
-                text = "0.50x          1.00x          1.50x"
-                textSize = 9f
-                gravity = Gravity.CENTER
-                setTextColor(Color.GRAY)
-            }
-```
-
-```
-        panel.addView(
-            pitchRange,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                18
-            )
-        )
-```
-
-```
-        val volumeTitle =
-            TextView(this@MainActivity).apply {
-                text = "CHANNEL LEVEL"
-                textSize = 10f
-                setTextColor(Color.GRAY)
-            }
-```
-
-```
-        panel.addView(
-            volumeTitle,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                18
-            )
-        )
-```
-
-```
-        volume.max = 100
-        volume.progress = 100
-```
-
-```
-        volume.setOnSeekBarChangeListener(
-            object : SeekBar.OnSeekBarChangeListener {
-```
-
-```
-                override fun onProgressChanged(
-                    bar: SeekBar?,
-                    progress: Int,
-                    fromUser: Boolean
-                ) {
-                    channelVolume = progress / 100f
-                    updateVolume()
-                }
-```
-
-```
-                override fun onStartTrackingTouch(bar: SeekBar?) {}
-                override fun onStopTrackingTouch(bar: SeekBar?) {}
-            }
-        )
-```
-
-```
-        panel.addView(
-            volume,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                34
-            )
-        )
-```
-
-```
-        parent.addView(
-            panel,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            ).apply {
-                setMargins(0, 2, 0, 2)
-            }
-        )
-    }
-```
-
-```
-    private fun makeButton(text: String): Button {
-        return Button(this@MainActivity).apply {
-            this.text = text
-            textSize = 10f
-            minHeight = 0
-            minimumHeight = 0
-            minWidth = 0
-            minimumWidth = 0
-            setPadding(2, 0, 2, 0)
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.rgb(45, 45, 45))
         }
-    }
-```
 
-```
-    private fun styleButton(button: Button) {
-        button.textSize = 10f
-        button.minHeight = 0
-        button.minimumHeight = 0
-        button.minWidth = 0
-        button.minimumWidth = 0
-        button.setPadding(2, 0, 2, 0)
-        button.setTextColor(Color.WHITE)
-        button.setBackgroundColor(Color.rgb(45, 45, 45))
-    }
-```
-
-```
-    private fun applySpeed() {
-        val finalSpeed =
-            min(
-                2.0f,
-                max(
-                    0.1f,
-                    baseSpeed + bendAmount
-                )
+        root.addView(
+            title,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                38
             )
-```
+        )
 
-```
-        player.setPlaybackParameters(
-            PlaybackParameters(
-                finalSpeed,
-                finalSpeed
+        deckA = Deck("A", root)
+        deckB = Deck("B", root)
+
+        addMixer(root)
+
+        setContentView(root)
+        startDisplayUpdates()
+    }
+
+    private fun addMixer(root: LinearLayout) {
+        val separator = View(this).apply {
+            setBackgroundColor(Color.rgb(50, 50, 50))
+        }
+
+        root.addView(
+            separator,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                1
+            )
+        )
+
+        val label = TextView(this).apply {
+            text = "CROSSFADER"
+            gravity = Gravity.CENTER
+            textSize = 11f
+            setTextColor(Color.GRAY)
+        }
+
+        root.addView(
+            label,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                24
+            )
+        )
+
+        val crossfader = SeekBar(this).apply {
+            max = 100
+            progress = 50
+        }
+
+        crossfader.setOnSeekBarChangeListener(
+            object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(
+                    seekBar: SeekBar?,
+                    progress: Int,
+                    fromUser: Boolean
+                ) {
+                    val x = progress / 100f
+                    val a = kotlin.math.cos(
+                        x * Math.PI / 2.0
+                    ).toFloat()
+                    val b = kotlin.math.sin(
+                        x * Math.PI / 2.0
+                    ).toFloat()
+
+                    deckA.setMixerVolume(a)
+                    deckB.setMixerVolume(b)
+                }
+
+                override fun onStartTrackingTouch(
+                    seekBar: SeekBar?
+                ) {}
+
+                override fun onStopTrackingTouch(
+                    seekBar: SeekBar?
+                ) {}
+            }
+        )
+
+        root.addView(
+            crossfader,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                42
             )
         )
     }
-```
 
-```
-    fun setMixerVolume(value: Float) {
-        mixerVolume = value
-        updateVolume()
+    private fun startDisplayUpdates() {
+        handler.post(object : Runnable {
+            override fun run() {
+                deckA.updateDisplay()
+                deckB.updateDisplay()
+                handler.postDelayed(this, 100)
+            }
+        })
     }
-```
 
-```
-    private fun updateVolume() {
-        player.volume =
-            min(
-                1f,
-                max(
-                    0f,
-                    channelVolume * mixerVolume
+    inner class Deck(
+        private val name: String,
+        parent: LinearLayout
+    ) {
+
+        private val player =
+            ExoPlayer.Builder(this@MainActivity).build()
+
+        private var channelVolume = 1f
+        private var mixerVolume = 0.707f
+
+        private var baseSpeed = 1.0f
+        private var bendAmount = 0.0f
+
+        private var cuePosition = 0L
+        private var bassCut = false
+
+        private val trackName =
+            TextView(this@MainActivity)
+
+        private val position =
+            TextView(this@MainActivity)
+
+        private val waveform =
+            WaveformView(this@MainActivity)
+
+        private val seek =
+            SeekBar(this@MainActivity)
+
+        private val speed =
+            SeekBar(this@MainActivity)
+
+        private val volume =
+            SeekBar(this@MainActivity)
+
+        private val play =
+            Button(this@MainActivity)
+
+        private val cue =
+            Button(this@MainActivity)
+
+        private val bass =
+            Button(this@MainActivity)
+
+        private val picker =
+            registerForActivityResult(
+                ActivityResultContracts.OpenDocument()
+            ) { uri: Uri? ->
+
+                if (uri == null) return@registerForActivityResult
+
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (_: Exception) {
+                }
+
+                player.setMediaItem(
+                    MediaItem.fromUri(uri)
+                )
+
+                player.prepare()
+
+                trackName.text =
+                    uri.lastPathSegment
+                        ?.substringAfterLast("/")
+                        ?: "Audio file"
+
+                cuePosition = 0L
+                waveform.reset()
+                play.text = "PLAY"
+            }
+
+        init {
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(
+                        C.AUDIO_CONTENT_TYPE_MUSIC
+                    )
+                    .build(),
+                true
+            )
+
+            createUI(parent)
+        }
+
+        private fun createUI(parent: LinearLayout) {
+
+            val panel =
+                LinearLayout(this@MainActivity).apply {
+                    orientation =
+                        LinearLayout.VERTICAL
+
+                    setPadding(8, 3, 8, 3)
+
+                    setBackgroundColor(
+                        Color.rgb(22, 22, 22)
+                    )
+                }
+
+            val heading =
+                TextView(this@MainActivity).apply {
+                    text = "DECK $name"
+                    textSize = 16f
+                    setTextColor(Color.CYAN)
+                    gravity =
+                        Gravity.CENTER_VERTICAL
+                }
+
+            panel.addView(
+                heading,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    28
                 )
             )
-    }
-```
 
-```
-    fun updateDisplay() {
-        if (player.duration > 0) {
-            val progress =
-                (
-                    player.currentPosition *
-                        1000 /
-                        player.duration
-                ).toInt()
-```
+            trackName.apply {
+                text = "No track loaded"
+                textSize = 12f
+                setTextColor(Color.WHITE)
+                gravity =
+                    Gravity.CENTER_VERTICAL
+            }
 
-```
-            seek.progress = progress
-```
+            panel.addView(
+                trackName,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    25
+                )
+            )
 
-```
-            waveform.progress =
-                player.currentPosition.toFloat() /
-                    player.duration.toFloat()
-```
+            waveform.setBackgroundColor(
+                Color.rgb(5, 5, 5)
+            )
 
-```
-            position.text =
-                "${formatTime(player.currentPosition)} / " +
+            panel.addView(
+                waveform,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    52
+                )
+            )
+
+            position.apply {
+                text = "00:00 / 00:00"
+                textSize = 10f
+                setTextColor(Color.GRAY)
+                gravity = Gravity.CENTER
+            }
+
+            panel.addView(
+                position,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    20
+                )
+            )
+
+            seek.max = 1000
+
+            seek.setOnSeekBarChangeListener(
+                object : SeekBar.OnSeekBarChangeListener {
+
+                    override fun onProgressChanged(
+                        bar: SeekBar?,
+                        progress: Int,
+                        fromUser: Boolean
+                    ) {
+                        if (
+                            fromUser &&
+                            player.duration > 0
+                        ) {
+                            val newPosition =
+                                player.duration *
+                                    progress /
+                                    1000L
+
+                            player.seekTo(newPosition)
+                            cuePosition = newPosition
+                        }
+                    }
+
+                    override fun onStartTrackingTouch(
+                        bar: SeekBar?
+                    ) {}
+
+                    override fun onStopTrackingTouch(
+                        bar: SeekBar?
+                    ) {}
+                }
+            )
+
+            panel.addView(
+                seek,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    34
+                )
+            )
+
+            val controls =
+                LinearLayout(this@MainActivity).apply {
+                    orientation =
+                        LinearLayout.HORIZONTAL
+
+                    gravity =
+                        Gravity.CENTER_VERTICAL
+                }
+
+            val load = makeButton("LOAD")
+
+            play.text = "PLAY"
+            styleButton(play)
+
+            cue.text = "CUE"
+            styleButton(cue)
+
+            bass.text = "BASS"
+            styleButton(bass)
+
+            load.setOnClickListener {
+                picker.launch(
+                    arrayOf(
+                        "audio/wav",
+                        "audio/x-wav",
+                        "audio/aiff",
+                        "audio/x-aiff",
+                        "audio/mpeg",
+                        "audio/*"
+                    )
+                )
+            }
+
+            play.setOnClickListener {
+                if (player.isPlaying) {
+                    player.pause()
+                    play.text = "PLAY"
+                } else {
+                    player.play()
+                    play.text = "PAUSE"
+                }
+            }
+
+            cue.setOnTouchListener { _, event ->
+
+                when (event.action) {
+
+                    MotionEvent.ACTION_DOWN -> {
+                        player.seekTo(cuePosition)
+                        player.play()
+                        cue.text = "CUE ▶"
+                        true
+                    }
+
+                    MotionEvent.ACTION_UP,
+                    MotionEvent.ACTION_CANCEL -> {
+                        player.pause()
+                        player.seekTo(cuePosition)
+                        cue.text = "CUE"
+                        true
+                    }
+
+                    else -> true
+                }
+            }
+
+            bass.setOnClickListener {
+
+                bassCut = !bassCut
+
+                if (bassCut) {
+                    bass.text = "BASS CUT"
+                    bass.setTextColor(Color.BLACK)
+                    bass.setBackgroundColor(
+                        Color.rgb(255, 190, 0)
+                    )
+                } else {
+                    bass.text = "BASS"
+                    bass.setTextColor(Color.WHITE)
+                    bass.setBackgroundColor(
+                        Color.rgb(45, 45, 45)
+                    )
+                }
+            }
+
+            controls.addView(
+                load,
+                LinearLayout.LayoutParams(
+                    0,
+                    46,
+                    1f
+                )
+            )
+
+            controls.addView(
+                play,
+                LinearLayout.LayoutParams(
+                    0,
+                    46,
+                    1f
+                )
+            )
+
+            controls.addView(
+                cue,
+                LinearLayout.LayoutParams(
+                    0,
+                    46,
+                    1f
+                )
+            )
+
+            controls.addView(
+                bass,
+                LinearLayout.LayoutParams(
+                    0,
+                    46,
+                    1f
+                )
+            )
+
+            panel.addView(controls)
+
+            val pitchTitle =
+                TextView(this@MainActivity).apply {
+                    text = "PITCH"
+                    textSize = 10f
+                    setTextColor(Color.GRAY)
+                }
+
+            panel.addView(
+                pitchTitle,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    18
+                )
+            )
+
+            val pitchRow =
+                LinearLayout(this@MainActivity).apply {
+                    orientation =
+                        LinearLayout.HORIZONTAL
+
+                    gravity =
+                        Gravity.CENTER_VERTICAL
+                }
+
+            val bendDown =
+                makeButton("−")
+
+            val bendUp =
+                makeButton("+")
+
+            speed.max = 100
+            speed.progress = 50
+
+            speed.setOnSeekBarChangeListener(
+                object : SeekBar.OnSeekBarChangeListener {
+
+                    override fun onProgressChanged(
+                        bar: SeekBar?,
+                        progress: Int,
+                        fromUser: Boolean
+                    ) {
+                        baseSpeed =
+                            0.5f +
+                                progress / 100f
+
+                        applySpeed()
+                    }
+
+                    override fun onStartTrackingTouch(
+                        bar: SeekBar?
+                    ) {}
+
+                    override fun onStopTrackingTouch(
+                        bar: SeekBar?
+                    ) {}
+                }
+            )
+
+            bendDown.setOnTouchListener { _, event ->
+
+                when (event.action) {
+
+                    MotionEvent.ACTION_DOWN -> {
+                        bendAmount = -0.04f
+                        applySpeed()
+                        true
+                    }
+
+                    MotionEvent.ACTION_UP,
+                    MotionEvent.ACTION_CANCEL -> {
+                        bendAmount = 0f
+                        applySpeed()
+                        true
+                    }
+
+                    else -> true
+                }
+            }
+
+            bendUp.setOnTouchListener { _, event ->
+
+                when (event.action) {
+
+                    MotionEvent.ACTION_DOWN -> {
+                        bendAmount = 0.04f
+                        applySpeed()
+                        true
+                    }
+
+                    MotionEvent.ACTION_UP,
+                    MotionEvent.ACTION_CANCEL -> {
+                        bendAmount = 0f
+                        applySpeed()
+                        true
+                    }
+
+                    else -> true
+                }
+            }
+
+            pitchRow.addView(
+                bendDown,
+                LinearLayout.LayoutParams(
+                    52,
+                    42
+                )
+            )
+
+            pitchRow.addView(
+                speed,
+                LinearLayout.LayoutParams(
+                    0,
+                    42,
+                    1f
+                )
+            )
+
+            pitchRow.addView(
+                bendUp,
+                LinearLayout.LayoutParams(
+                    52,
+                    42
+                )
+            )
+
+            panel.addView(pitchRow)
+
+            val pitchRange =
+                TextView(this@MainActivity).apply {
+                    text =
+                        "0.50x          1.00x          1.50x"
+
+                    textSize = 9f
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.GRAY)
+                }
+
+            panel.addView(
+                pitchRange,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    18
+                )
+            )
+
+            val volumeTitle =
+                TextView(this@MainActivity).apply {
+                    text = "CHANNEL LEVEL"
+                    textSize = 10f
+                    setTextColor(Color.GRAY)
+                }
+
+            panel.addView(
+                volumeTitle,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    18
+                )
+            )
+
+            volume.max = 100
+            volume.progress = 100
+
+            volume.setOnSeekBarChangeListener(
+                object : SeekBar.OnSeekBarChangeListener {
+
+                    override fun onProgressChanged(
+                        bar: SeekBar?,
+                        progress: Int,
+                        fromUser: Boolean
+                    ) {
+                        channelVolume =
+                            progress / 100f
+
+                        updateVolume()
+                    }
+
+                    override fun onStartTrackingTouch(
+                        bar: SeekBar?
+                    ) {}
+
+                    override fun onStopTrackingTouch(
+                        bar: SeekBar?
+                    ) {}
+                }
+            )
+
+            panel.addView(
+                volume,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    34
+                )
+            )
+
+            parent.addView(
+                panel,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    0,
+                    1f
+                ).apply {
+                    setMargins(0, 2, 0, 2)
+                }
+            )
+        }
+
+        private fun makeButton(
+            text: String
+        ): Button {
+
+            return Button(this@MainActivity).apply {
+                this.text = text
+                textSize = 10f
+                minHeight = 0
+                minimumHeight = 0
+                minWidth = 0
+                minimumWidth = 0
+                setPadding(2, 0, 2, 0)
+                setTextColor(Color.WHITE)
+                setBackgroundColor(
+                    Color.rgb(45, 45, 45)
+                )
+            }
+        }
+
+        private fun styleButton(
+            button: Button
+        ) {
+            button.textSize = 10f
+            button.minHeight = 0
+            button.minimumHeight = 0
+            button.minWidth = 0
+            button.minimumWidth = 0
+            button.setPadding(2, 0, 2, 0)
+            button.setTextColor(Color.WHITE)
+            button.setBackgroundColor(
+                Color.rgb(45, 45, 45)
+            )
+        }
+
+        private fun applySpeed() {
+
+            val finalSpeed =
+                min(
+                    2.0f,
+                    max(
+                        0.1f,
+                        baseSpeed + bendAmount
+                    )
+                )
+
+            player.setPlaybackParameters(
+                PlaybackParameters(
+                    finalSpeed,
+                    finalSpeed
+                )
+            )
+        }
+
+        fun setMixerVolume(
+            value: Float
+        ) {
+            mixerVolume = value
+            updateVolume()
+        }
+
+        private fun updateVolume() {
+            player.volume =
+                min(
+                    1f,
+                    max(
+                        0f,
+                        channelVolume *
+                            mixerVolume
+                    )
+                )
+        }
+
+        fun updateDisplay() {
+
+            if (player.duration > 0) {
+
+                val progress =
+                    (
+                        player.currentPosition *
+                            1000 /
+                            player.duration
+                    ).toInt()
+
+                seek.progress = progress
+
+                waveform.progress =
+                    player.currentPosition.toFloat() /
+                        player.duration.toFloat()
+
+                position.text =
+                    "${formatTime(player.currentPosition)} / " +
                     formatTime(player.duration)
-        } else {
-            waveform.progress = 0f
+
+            } else {
+                waveform.progress = 0f
+            }
+        }
+
+        private fun formatTime(
+            milliseconds: Long
+        ): String {
+
+            val seconds =
+                max(
+                    0L,
+                    milliseconds / 1000
+                )
+
+            val minutes = seconds / 60
+            val remainder = seconds % 60
+
+            return "%02d:%02d".format(
+                minutes,
+                remainder
+            )
+        }
+
+        fun release() {
+            player.release()
         }
     }
-```
 
-```
-    private fun formatTime(milliseconds: Long): String {
-        val seconds = max(0L, milliseconds / 1000)
-        val minutes = seconds / 60
-        val remainder = seconds % 60
-```
+    class WaveformView(
+        context: android.content.Context
+    ) : View(context) {
 
-```
-        return "%02d:%02d".format(
-            minutes,
-            remainder
-        )
-    }
-```
+        private val paint =
+            Paint(Paint.ANTI_ALIAS_FLAG)
 
-```
-    fun release() {
-        player.release()
-    }
-}
-```
+        var progress = 0f
+            set(value) {
+                field =
+                    value.coerceIn(0f, 1f)
+                invalidate()
+            }
 
-```
-class WaveformView(
-    context: android.content.Context
-) : View(context) {
-```
-
-```
-    private val paint =
-        Paint(Paint.ANTI_ALIAS_FLAG)
-```
-
-```
-    private var waveformData: FloatArray? = null
-```
-
-```
-    var progress = 0f
-        set(value) {
-            field = value.coerceIn(0f, 1f)
-            invalidate()
-        }
-```
-
-```
-    init {
-        paint.strokeWidth = 2f
-    }
-```
-
-```
-    fun reset() {
-        waveformData = null
-        progress = 0f
-    }
-```
-
-```
-    fun setWaveform(data: FloatArray) {
-        waveformData = data
-        invalidate()
-    }
-```
-
-```
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-```
-
-```
-        val width = width.toFloat()
-        val height = height.toFloat()
-        val center = height / 2f
-```
-
-```
-        paint.color = Color.rgb(35, 35, 35)
-        paint.strokeWidth = 1f
-```
-
-```
-        canvas.drawLine(
-            0f,
-            center,
-            width,
-            center,
-            paint
-        )
-```
-
-```
-        val data = waveformData
-```
-
-```
-        if (data != null && data.isNotEmpty()) {
-            paint.color = Color.rgb(0, 180, 200)
+        init {
             paint.strokeWidth = 2f
-```
+        }
 
-```
-            val count = min(data.size, width.toInt().coerceAtLeast(1))
-```
+        fun reset() {
+            progress = 0f
+        }
 
-```
-            for (x in 0 until count) {
-                val index =
-                    x * data.size / count
-```
+        override fun onDraw(
+            canvas: Canvas
+        ) {
+            super.onDraw(canvas)
 
-```
+            val width =
+                width.toFloat()
+
+            val height =
+                height.toFloat()
+
+            paint.color =
+                Color.rgb(35, 35, 35)
+
+            paint.strokeWidth = 1f
+
+            canvas.drawLine(
+                0f,
+                height / 2f,
+                width,
+                height / 2f,
+                paint
+            )
+
+            paint.color =
+                Color.rgb(0, 180, 200)
+
+            paint.strokeWidth = 2f
+
+            val bars = 80
+            val barWidth =
+                width / bars
+
+            for (i in 0 until bars) {
+
+                val x =
+                    i * barWidth
+
+                val wave =
+                    kotlin.math.sin(
+                        i * 0.63
+                    ) * 0.45 +
+                    kotlin.math.sin(
+                        i * 0.17
+                    ) * 0.25 +
+                    kotlin.math.sin(
+                        i * 1.37
+                    ) * 0.15
+
                 val amplitude =
-                    data[index] * height * 0.45f
-```
+                    (
+                        0.25f +
+                            kotlin.math.abs(
+                                wave
+                            ).toFloat() *
+                            0.65f
+                    ) *
+                        height / 2f
 
-```
                 canvas.drawLine(
-                    x.toFloat(),
-                    center - amplitude,
-                    x.toFloat(),
-                    center + amplitude,
+                    x,
+                    height / 2f -
+                        amplitude,
+                    x,
+                    height / 2f +
+                        amplitude,
                     paint
                 )
             }
-        }
-```
 
-```
-        paint.color = Color.WHITE
-        paint.strokeWidth = 3f
-```
+            paint.color = Color.WHITE
+            paint.strokeWidth = 3f
 
-```
-        val cursorX = width * progress
-```
+            val cursorX =
+                width * progress
 
-```
-        canvas.drawLine(
-            cursorX,
-            0f,
-            cursorX,
-            height,
-            paint
-        )
-```
-
-```
-        paint.color = Color.argb(
-            70,
-            0,
-            0,
-            0
-        )
-```
-
-```
-        canvas.drawRect(
-            RectF(
-                0f,
+            canvas.drawLine(
+                cursorX,
                 0f,
                 cursorX,
-                height
-            ),
-            paint
+                height,
+                paint
+            )
+
+            paint.color =
+                Color.argb(
+                    70,
+                    0,
+                    0,
+                    0
+                )
+
+            canvas.drawRect(
+                RectF(
+                    0f,
+                    0f,
+                    cursorX,
+                    height
+                ),
+                paint
+            )
+        }
+    }
+
+    override fun onDestroy() {
+
+        handler.removeCallbacksAndMessages(
+            null
         )
+
+        deckA.release()
+        deckB.release()
+
+        super.onDestroy()
     }
 }
-```
-
-```
-override fun onDestroy() {
-    handler.removeCallbacksAndMessages(null)
-    deckA.release()
-    deckB.release()
-    super.onDestroy()
-}
-```
-
- }
