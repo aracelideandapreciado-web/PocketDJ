@@ -313,7 +313,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             val value = mantissa / Math.pow(2.0, 63.0) *
-                Math.pow(2.0, (exponent - 16383 + 1).toDouble())
+                Math.pow(2.0, (exponent - 16383).toDouble())
             return if ((b[0].toInt() and 0x80) != 0) -value else value
         }
 
