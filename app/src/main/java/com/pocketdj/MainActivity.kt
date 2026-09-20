@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.media.audiofx.Equalizer
+import android.os.Build
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -43,6 +44,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var deckB: Deck
 
     private val handler = Handler(Looper.getMainLooper())
+
+    private var masterVolume = 0.85f
+    private var limiterEnabled = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -143,6 +147,37 @@ class MainActivity : AppCompatActivity() {
                 42
             )
         )
+
+        val masterLabel = TextView(this).apply {
+            text = "MASTER 85% • LIMITER ON"
+            gravity = Gravity.CENTER
+            textSize = 11f
+            setTextColor(Color.GRAY)
+        }
+
+        root.addView(masterLabel, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 22
+        ))
+
+        val master = SeekBar(this).apply {
+            max = 85
+            progress = 85
+        }
+
+        master.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
+                masterVolume = progress / 100f
+                deckA.setMasterVolume(masterVolume)
+                deckB.setMasterVolume(masterVolume)
+                masterLabel.text = "MASTER ${(masterVolume * 100f).roundToInt()}% • LIMITER ON"
+            }
+            override fun onStartTrackingTouch(bar: SeekBar?) {}
+            override fun onStopTrackingTouch(bar: SeekBar?) {}
+        })
+
+        root.addView(master, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 38
+        ))
     }
 
     inner class Deck(
@@ -160,6 +195,7 @@ class MainActivity : AppCompatActivity() {
 
         private var channelVolume = 1f
         private var mixerVolume = 0.707f
+        private var masterVolumeForDeck = 0.85f
 
         private var baseSpeed = 1f
         private var bendAmount = 0f
@@ -168,6 +204,7 @@ class MainActivity : AppCompatActivity() {
         private var originalBassLevels = ShortArray(0)
         private var deckLocked = false
         private var reverseMode = false
+        private var cueHeld = false
         private val reverseHandler = Handler(Looper.getMainLooper())
         private val reverseStep = object : Runnable {
             override fun run() {
@@ -1224,10 +1261,34 @@ class MainActivity : AppCompatActivity() {
 
                     MotionEvent.ACTION_DOWN -> {
 
-                        player.seekTo(cuePosition)
-                        player.play()
+                        if (!player.isPlaying) {
+                            // CDJ-style: while stopped/paused, CUE sets the cue point.
+                            cuePosition =
+                                player.currentPosition.coerceAtLeast(0L)
 
-                        cue.text = "CUE ▶"
+                            cue.text = "CUE SET"
+                            cueHeld = false
+
+                        } else {
+                            // CDJ-style: a press while playing immediately returns
+                            // to the cue point and pauses there.
+                            player.pause()
+                            player.seekTo(cuePosition)
+                            play.text = "PLAY"
+
+                            cueHeld = false
+
+                            // Holding CUE starts playback from the cue point.
+                            cue.postDelayed({
+                                if (cue.isPressed && !deckLocked) {
+                                    cueHeld = true
+                                    player.seekTo(cuePosition)
+                                    player.play()
+                                    play.text = "PAUSE"
+                                    cue.text = "CUE ▶"
+                                }
+                            }, 180L)
+                        }
 
                         true
                     }
@@ -1235,11 +1296,22 @@ class MainActivity : AppCompatActivity() {
                     MotionEvent.ACTION_UP,
                     MotionEvent.ACTION_CANCEL -> {
 
-                        player.pause()
-                        player.seekTo(cuePosition)
+                        cue.removeCallbacksAndMessages(null)
+
+                        if (cueHeld) {
+                            // Release after holding: stop and return to the cue point.
+                            cueHeld = false
+                            player.pause()
+                            player.seekTo(cuePosition)
+                            play.text = "PLAY"
+                        } else {
+                            // Short press while playing: remain stopped at the cue point.
+                            player.pause()
+                            player.seekTo(cuePosition)
+                            play.text = "PLAY"
+                        }
 
                         cue.text = "CUE"
-
                         true
                     }
 
@@ -1685,6 +1757,11 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        fun setMasterVolume(value: Float) {
+            masterVolumeForDeck = value.coerceIn(0f, 1f)
+            updateVolume()
+        }
+
         fun setMixerVolume(
             value: Float
         ) {
@@ -1701,7 +1778,7 @@ class MainActivity : AppCompatActivity() {
                     1f,
                     max(
                         0f,
-                        channelVolume * mixerVolume
+                        channelVolume * mixerVolume * masterVolumeForDeck
                     )
                 )
         }
@@ -1891,7 +1968,10 @@ class MainActivity : AppCompatActivity() {
                 } else -1L
                 if (durationUs <= 0L) return FloatArray(0)
 
-                val output = FloatArray(320)
+                val output = FloatArray(640)
+                val sumSquares = DoubleArray(output.size)
+                val counts = IntArray(output.size)
+                val peaks = FloatArray(output.size)
                 var sampleRate = if (format.containsKey(android.media.MediaFormat.KEY_SAMPLE_RATE)) {
                     format.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
                 } else 48_000
@@ -1905,16 +1985,21 @@ class MainActivity : AppCompatActivity() {
                     val bytesPerFrame = 2 * channels
                     var frameIndex = ((presentationTimeUs.coerceAtLeast(0L) * sampleRate) / 1_000_000L)
                     while (buffer.remaining() >= bytesPerFrame) {
-                        var peak = 0f
+                        var framePeak = 0f
+                        var frameSum = 0.0
                         repeat(channels) {
                             val lo = buffer.get().toInt() and 0xFF
                             val hi = buffer.get().toInt()
                             val sample = ((hi shl 8) or lo).toShort().toInt()
-                            peak = max(peak, abs(sample / 32768f))
+                            val value = abs(sample / 32768f)
+                            framePeak = max(framePeak, value)
+                            frameSum += value.toDouble() * value.toDouble()
                         }
                         val bin = ((frameIndex * output.size) / totalFrames)
                             .toInt().coerceIn(0, output.lastIndex)
-                        if (peak > output[bin]) output[bin] = peak
+                        sumSquares[bin] += frameSum / channels
+                        counts[bin]++
+                        peaks[bin] = max(peaks[bin], framePeak)
                         frameIndex++
                     }
                 }
@@ -1929,6 +2014,12 @@ class MainActivity : AppCompatActivity() {
                         val time = extractor.sampleTime
                         addPcm16Samples(buffer, time)
                         if (!extractor.advance()) break
+                    }
+                    for (i in output.indices) {
+                        val rms = if (counts[i] > 0) {
+                            kotlin.math.sqrt(sumSquares[i] / counts[i]).toFloat()
+                        } else 0f
+                        output[i] = max(rms * 0.72f, peaks[i] * 0.28f)
                     }
                     return output
                 }
@@ -1989,6 +2080,13 @@ class MainActivity : AppCompatActivity() {
                             if (eos) outputDone = true
                         }
                     }
+                }
+
+                for (i in output.indices) {
+                    val rms = if (counts[i] > 0) {
+                        kotlin.math.sqrt(sumSquares[i] / counts[i]).toFloat()
+                    } else 0f
+                    output[i] = max(rms * 0.72f, peaks[i] * 0.28f)
                 }
 
                 return output
