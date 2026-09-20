@@ -167,6 +167,25 @@ class MainActivity : AppCompatActivity() {
         private var equalizer: Equalizer? = null
         private var originalBassLevels = ShortArray(0)
         private var deckLocked = false
+        private var reverseMode = false
+        private val reverseHandler = Handler(Looper.getMainLooper())
+        private val reverseStep = object : Runnable {
+            override fun run() {
+                if (!reverseMode || deckLocked || loadedUri == null) return
+
+                val newPosition =
+                    (player.currentPosition - 120L).coerceAtLeast(0L)
+
+                player.seekTo(newPosition)
+
+                if (newPosition <= 0L) {
+                    reverseMode = false
+                    return
+                }
+
+                reverseHandler.postDelayed(this, 60L)
+            }
+        }
 
         private var cuePosition = 0L
 
@@ -205,6 +224,9 @@ class MainActivity : AppCompatActivity() {
             Button(this@MainActivity)
 
         private val pitchReset =
+            Button(this@MainActivity)
+
+        private val reverse =
             Button(this@MainActivity)
 
         private val pitchPercent =
@@ -984,6 +1006,7 @@ class MainActivity : AppCompatActivity() {
                 textSize = 16f
                 setTextColor(Color.CYAN)
                 gravity = Gravity.CENTER
+                translationY = -6f
             }
 
             panel.addView(
@@ -1007,7 +1030,7 @@ class MainActivity : AppCompatActivity() {
             )
 
             position.apply {
-                text = "00:00 / 00:00"
+                text = "00:00 / -00:00 / 00:00"
                 textSize = 10f
                 setTextColor(Color.GRAY)
                 gravity = Gravity.CENTER
@@ -1096,6 +1119,28 @@ class MainActivity : AppCompatActivity() {
             pitchReset.text = "RESET"
             styleButton(pitchReset)
 
+            reverse.text = "REV"
+            styleButton(reverse)
+
+            reverse.setOnClickListener {
+
+                if (deckLocked || loadedUri == null) return@setOnClickListener
+
+                if (reverseMode) {
+                    reverseMode = false
+                    reverseHandler.removeCallbacks(reverseStep)
+                    reverse.text = "REV"
+                    return@setOnClickListener
+                }
+
+                player.pause()
+                play.text = "PLAY"
+                reverseMode = true
+                reverse.text = "REV ▶"
+                reverseHandler.removeCallbacks(reverseStep)
+                reverseHandler.post(reverseStep)
+            }
+
             lockButton.setOnClickListener {
 
                 deckLocked = !deckLocked
@@ -1109,6 +1154,10 @@ class MainActivity : AppCompatActivity() {
                     play.isEnabled = false
                     cue.isEnabled = false
                     seek.isEnabled = false
+                    reverseMode = false
+                    reverseHandler.removeCallbacks(reverseStep)
+                    reverse.text = "REV"
+                    reverse.isEnabled = false
                 } else {
                     lockButton.text = "LOCK"
                     lockButton.setTextColor(Color.WHITE)
@@ -1118,6 +1167,7 @@ class MainActivity : AppCompatActivity() {
                     play.isEnabled = loadedUri != null
                     cue.isEnabled = loadedUri != null
                     seek.isEnabled = loadedUri != null
+                    reverse.isEnabled = loadedUri != null
                 }
             }
 
@@ -1270,6 +1320,7 @@ class MainActivity : AppCompatActivity() {
             play.isEnabled = loadedUri != null
             cue.isEnabled = loadedUri != null
             seek.isEnabled = loadedUri != null
+            reverse.isEnabled = loadedUri != null
 
             val pitchTitle =
                 TextView(this@MainActivity).apply {
@@ -1394,6 +1445,14 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams(
                     62,
                     52
+                ).apply { setMargins(2, 2, 4, 2) }
+            )
+
+            pitchRow.addView(
+                reverse,
+                LinearLayout.LayoutParams(
+                    62,
+                    52
                 ).apply { setMargins(2, 2, 6, 2) }
             )
 
@@ -1411,7 +1470,7 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams(
                     76,
                     52
-                ).apply { setMargins(8, 2, 8, 2) }
+                ).apply { setMargins(8, 2, 6, 2) }
             )
 
             pitchRow.addView(
@@ -1676,8 +1735,11 @@ class MainActivity : AppCompatActivity() {
                     current.toFloat() /
                         duration.toFloat()
 
+                val remaining =
+                    (duration - current).coerceAtLeast(0L)
+
                 position.text =
-                    "${formatTime(current)} / " +
+                    "${formatTime(current)} / -${formatTime(remaining)} / " +
                         formatTime(duration)
 
             } else {
@@ -1685,7 +1747,7 @@ class MainActivity : AppCompatActivity() {
                 waveform.progress = 0f
 
                 position.text =
-                    "00:00 / 00:00"
+                    "00:00 / -00:00 / 00:00"
             }
 
             if (
@@ -1724,6 +1786,8 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Exception) {
             }
             equalizer = null
+            reverseMode = false
+            reverseHandler.removeCallbacks(reverseStep)
             player.release()
         }
     }
