@@ -82,9 +82,30 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(root)
 
-        // Keep audio running while the app is minimized or another app is opened.
-        // Audio focus is handled by ExoPlayer so PocketDJ remains the active music player.
         handler.post(displayRunnable)
+    }
+
+    private fun startBackgroundPlaybackService() {
+        try {
+            val intent = Intent(this, BackgroundPlaybackService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (_: Exception) {
+            // Normal playback can continue if the foreground service cannot start.
+        }
+    }
+
+    private fun stopBackgroundPlaybackServiceIfIdle() {
+        if (!::deckA.isInitialized || !::deckB.isInitialized) return
+        if (!deckA.playerIsPlaying() && !deckB.playerIsPlaying()) {
+            try {
+                stopService(Intent(this, BackgroundPlaybackService::class.java))
+            } catch (_: Exception) {
+            }
+        }
     }
 
     private val displayRunnable = object : Runnable {
@@ -219,8 +240,13 @@ class MainActivity : AppCompatActivity() {
             override fun run() {
                 if (!reverseMode || deckLocked || loadedUri == null) return
 
+                val reverseSpeed =
+                    min(2f, max(0.1f, baseSpeed + bendAmount))
+                val stepMs =
+                    (40L * reverseSpeed).toLong().coerceAtLeast(1L)
+
                 reversePosition =
-                    (reversePosition - 400L).coerceAtLeast(0L)
+                    (reversePosition - stepMs).coerceAtLeast(0L)
 
                 player.seekTo(reversePosition)
 
@@ -234,7 +260,7 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
 
-                reverseHandler.postDelayed(this, 80L)
+                reverseHandler.postDelayed(this, 40L)
             }
         }
 
@@ -1005,10 +1031,9 @@ class MainActivity : AppCompatActivity() {
                     .setUsage(C.USAGE_MEDIA)
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                     .build(),
-                true
+                false
             )
 
-            player.setWakeMode(C.WAKE_MODE_LOCAL)
             player.volume = mixerVolume
 
             createUI(parent)
@@ -1307,6 +1332,7 @@ class MainActivity : AppCompatActivity() {
                     player.pause()
 
                     play.text = "PLAY"
+                    stopBackgroundPlaybackServiceIfIdle()
 
                 } else {
 
@@ -1317,6 +1343,7 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     player.play()
+                    startBackgroundPlaybackService()
 
                     play.text = "PAUSE"
                 }
@@ -1950,6 +1977,8 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        fun playerIsPlaying(): Boolean = player.isPlaying
+
         fun release() {
             try {
                 equalizer?.release()
@@ -2298,10 +2327,13 @@ class MainActivity : AppCompatActivity() {
 
         handler.removeCallbacksAndMessages(null)
 
-        // Do not stop the players here. Android may destroy the Activity
-        // while the app is in the background; keeping the players alive
-        // allows audio to continue. The process can still be reclaimed by
-        // Android when memory is critically low.
+        if (::deckA.isInitialized) {
+            deckA.release()
+        }
+
+        if (::deckB.isInitialized) {
+            deckB.release()
+        }
 
         super.onDestroy()
     }
