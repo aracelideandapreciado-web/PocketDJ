@@ -600,7 +600,7 @@ class MainActivity : AppCompatActivity() {
             val n = it.read(data)
             if (n <= 0) return null
             val text = String(data, 0, n, Charsets.ISO_8859_1)
-            return Regex("(?i)$key[^0-9]{0,8}([0-9]{2,3}(?:\.[0-9]+)?)").find(text)?.groupValues?.get(1)
+            return Regex("(?i)$key[^0-9]{0,8}([0-9]{2,3}(?:\\.[0-9]+)?)").find(text)?.groupValues?.get(1)
                 ?.toDoubleOrNull()?.takeIf { v -> v in 20.0..300.0 }
         }
     }
