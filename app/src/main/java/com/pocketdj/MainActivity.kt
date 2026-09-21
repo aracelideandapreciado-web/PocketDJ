@@ -39,6 +39,7 @@ import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.PI
 import kotlin.math.roundToInt
+import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
@@ -59,6 +60,7 @@ class MainActivity : AppCompatActivity() {
     private var librarySortMode = "A-Z"
     private val libraryFolderStack = ArrayList<Uri>()
     private var libraryRefreshToken = 0
+    private val libraryMetadataExecutor = Executors.newFixedThreadPool(3)
 
     private lateinit var mainRoot: LinearLayout
 
@@ -409,7 +411,7 @@ class MainActivity : AppCompatActivity() {
             val uri = librarySelectedUri ?: return@setOnClickListener
             val deck = if (librarySelectedDeck == "A") deckA else deckB
             if (deck.playerIsPlaying()) return@setOnClickListener
-            deck.loadFromLibrary(uri, librarySelectedName)
+            deck.loadFromLibrary(uri, librarySelectedName, true)
         }
 
         fun refreshList() {
@@ -427,50 +429,13 @@ class MainActivity : AppCompatActivity() {
 
             Thread {
                 val entries = sortLibraryEntries(queryLibraryEntries(treeUri, currentUri, filter), sortMode)
+
                 runOnUiThread {
                     if (!libraryVisible || token != libraryRefreshToken) return@runOnUiThread
-                    listContainer.removeAllViews()
-                    if (entries.isEmpty()) {
-                        val empty = TextView(this).apply {
-                            text = "No audio files or folders"
-                            textSize = 12f
-                            setTextColor(Color.GRAY)
-                            gravity = Gravity.CENTER
-                        }
-                        listContainer.addView(empty, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 80))
-                    }
-                    for (entry in entries) {
-                        val row = makeMainButton(entry.displayName)
-                        row.gravity = Gravity.START or Gravity.CENTER_VERTICAL
-                        row.text = if (entry.isDirectory) {
-                            "📁 ${entry.displayName}"
-                        } else {
-                            val bpmText = entry.bpm?.let { "${formatLibraryBpm(it)} BPM" } ?: "-- BPM"
-                            "🎵 ${entry.displayName}    $bpmText    ${entry.durationText}"
-                        }
-                        row.setTextColor(if (entry.isDirectory) Color.WHITE else Color.LTGRAY)
-                        row.setBackgroundColor(if (librarySelectedUri?.toString() == entry.uri.toString()) Color.rgb(0, 90, 105) else Color.rgb(30, 30, 30))
-                        row.setOnClickListener {
-                            if (entry.isDirectory) {
-                                libraryFolderStack.add(currentUri)
-                                libraryCurrentUri = entry.uri
-                                librarySelectedUri = null
-                                librarySelectedName = ""
-                                showLibrary()
-                            } else {
-                                librarySelectedUri = entry.uri
-                                librarySelectedName = entry.displayName
-                                selectedLabel.text = "Selected: ${entry.displayName}"
-                                updateDeckButtons()
-                                refreshList()
-                            }
-                        }
-                        listContainer.addView(row, LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.MATCH_PARENT, 48
-                        ).apply { setMargins(2, 2, 2, 2) })
-                    }
-                    updateDeckButtons()
+                    renderLibraryEntries(entries, currentUri, listContainer, selectedLabel, ::updateDeckButtons, token)
                 }
+
+                enrichLibraryMetadataAsync(entries, token, currentUri, listContainer, selectedLabel, ::updateDeckButtons)
             }.start()
         }
 
@@ -493,6 +458,189 @@ class MainActivity : AppCompatActivity() {
         setContentView(screen)
     }
 
+    private fun renderLibraryEntries(
+        entries: List<LibraryEntry>,
+        currentUri: Uri,
+        listContainer: LinearLayout,
+        selectedLabel: TextView,
+        updateDeckButtons: () -> Unit,
+        token: Int
+    ) {
+        if (!libraryVisible || token != libraryRefreshToken) return
+
+        listContainer.removeAllViews()
+
+        if (entries.isEmpty()) {
+            val empty = TextView(this).apply {
+                text = "No audio files or folders"
+                textSize = 12f
+                setTextColor(Color.GRAY)
+                gravity = Gravity.CENTER
+            }
+            listContainer.addView(empty, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 80))
+            updateDeckButtons()
+            return
+        }
+
+        for (entry in entries) {
+            val row = makeMainButton(entry.displayName)
+            row.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            row.text = if (entry.isDirectory) {
+                "📁 ${entry.displayName}"
+            } else {
+                val bpmText = entry.bpm?.let { "${formatLibraryBpm(it)} BPM" } ?: "-- BPM"
+                "🎵 ${entry.displayName}    $bpmText    ${entry.durationText}"
+            }
+            row.setTextColor(if (entry.isDirectory) Color.WHITE else Color.LTGRAY)
+            row.setBackgroundColor(
+                if (librarySelectedUri?.toString() == entry.uri.toString())
+                    Color.rgb(0, 90, 105)
+                else
+                    Color.rgb(30, 30, 30)
+            )
+            row.setOnClickListener {
+                if (entry.isDirectory) {
+                    libraryFolderStack.add(currentUri)
+                    libraryCurrentUri = entry.uri
+                    librarySelectedUri = null
+                    librarySelectedName = ""
+                    showLibrary()
+                } else {
+                    librarySelectedUri = entry.uri
+                    librarySelectedName = entry.displayName
+                    selectedLabel.text = "Selected: ${entry.displayName}"
+                    for (i in 0 until listContainer.childCount) {
+                        val child = listContainer.getChildAt(i)
+                        val childEntry = child.tag as? LibraryEntry
+                        if (childEntry != null) {
+                            child.setBackgroundColor(
+                                if (childEntry.uri.toString() == entry.uri.toString())
+                                    Color.rgb(0, 90, 105)
+                                else
+                                    Color.rgb(30, 30, 30)
+                            )
+                        }
+                    }
+                    updateDeckButtons()
+                }
+            }
+            row.tag = entry
+            listContainer.addView(
+                row,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, 48
+                ).apply { setMargins(2, 2, 2, 2) }
+            )
+        }
+        updateDeckButtons()
+    }
+
+    private fun enrichLibraryMetadataAsync(
+        entries: List<LibraryEntry>,
+        token: Int,
+        currentUri: Uri,
+        listContainer: LinearLayout,
+        selectedLabel: TextView,
+        updateDeckButtons: () -> Unit
+    ) {
+        val pending = entries.filter { !it.isDirectory && !it.metadataCached }
+        if (pending.isEmpty()) {
+            if (librarySortMode == "BPM ↑" || librarySortMode == "BPM ↓" ||
+                librarySortMode == "Duration ↑" || librarySortMode == "Duration ↓") {
+                runOnUiThread {
+                    if (libraryVisible && token == libraryRefreshToken) {
+                        renderLibraryEntries(sortLibraryEntries(entries, librarySortMode), currentUri, listContainer, selectedLabel, updateDeckButtons, token)
+                    }
+                }
+            }
+            return
+        }
+
+        var remaining = pending.size
+        val lock = Any()
+
+        for (entry in pending) {
+            libraryMetadataExecutor.execute {
+                var bpmValue: Double? = null
+                var durationValue: Long? = null
+                try {
+                    bpmValue = readBpmFromMetadataForLibrary(entry.uri)
+                } catch (_: Exception) {
+                }
+                try {
+                    durationValue = readDurationForLibrary(entry.uri)
+                } catch (_: Exception) {
+                }
+
+                saveLibraryMetadataCache(entry.uri, entry.size, entry.lastModified, bpmValue, durationValue)
+
+                synchronized(lock) {
+                    entry.bpm = bpmValue
+                    entry.durationMs = durationValue
+                    entry.metadataCached = true
+                    remaining--
+                }
+
+                runOnUiThread {
+                    if (!libraryVisible || token != libraryRefreshToken) return@runOnUiThread
+                    if (librarySortMode == "BPM ↑" || librarySortMode == "BPM ↓" ||
+                        librarySortMode == "Duration ↑" || librarySortMode == "Duration ↓") {
+                        if (remaining == 0) {
+                            renderLibraryEntries(sortLibraryEntries(entries, librarySortMode), currentUri, listContainer, selectedLabel, updateDeckButtons, token)
+                        }
+                    } else {
+                        // A-Z, Z-A and File Type can update their metadata in place without rescanning.
+                        for (i in 0 until listContainer.childCount) {
+                            val child = listContainer.getChildAt(i)
+                            val childEntry = child.tag as? LibraryEntry
+                            if (childEntry?.uri?.toString() == entry.uri.toString() && child is Button) {
+                                val bpmText = entry.bpm?.let { "${formatLibraryBpm(it)} BPM" } ?: "-- BPM"
+                                child.text = "🎵 ${entry.displayName}    $bpmText    ${entry.durationText}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun readCachedLibraryMetadata(
+        uri: Uri,
+        size: Long,
+        lastModified: Long
+    ): LibraryMetadata? {
+        val prefs = getSharedPreferences("pocketdj_library_cache", MODE_PRIVATE)
+        val base = "v24_${uri}_${size}_${lastModified}"
+        if (!prefs.contains("$base.cached")) return null
+        val bpmRaw = prefs.getString("$base.bpm", "NONE")
+        val durationRaw = prefs.getLong("$base.duration", -1L)
+        return LibraryMetadata(
+            if (bpmRaw == null || bpmRaw == "NONE") null else bpmRaw.toDoubleOrNull(),
+            if (durationRaw >= 0L) durationRaw else null
+        )
+    }
+
+    private fun saveLibraryMetadataCache(
+        uri: Uri,
+        size: Long,
+        lastModified: Long,
+        bpm: Double?,
+        durationMs: Long?
+    ) {
+        val prefs = getSharedPreferences("pocketdj_library_cache", MODE_PRIVATE)
+        val base = "v24_${uri}_${size}_${lastModified}"
+        prefs.edit()
+            .putString("$base.bpm", bpm?.toString() ?: "NONE")
+            .putLong("$base.duration", durationMs ?: -1L)
+            .putBoolean("$base.cached", true)
+            .apply()
+    }
+
+    private data class LibraryMetadata(
+        val bpm: Double?,
+        val durationMs: Long?
+    )
+
     private data class LibraryEntry(
         val uri: Uri,
         val displayName: String,
@@ -500,8 +648,9 @@ class MainActivity : AppCompatActivity() {
         val mimeType: String,
         val size: Long,
         val lastModified: Long,
-        val durationMs: Long?,
-        val bpm: Double?
+        var durationMs: Long?,
+        var bpm: Double?,
+        var metadataCached: Boolean = false
     ) {
         val durationText: String
             get() {
@@ -543,13 +692,16 @@ class MainActivity : AppCompatActivity() {
                     val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
                     if (!isDir && !isSupportedAudioName(name)) continue
                     val childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
-                    val bpmValue = if (!isDir) readBpmFromMetadataForLibrary(childUri) else null
-                    val duration = if (!isDir) readDurationForLibrary(childUri) else null
+                    val sizeValue = if (sizeCol >= 0 && !cursor.isNull(sizeCol)) cursor.getLong(sizeCol) else 0L
+                    val modifiedValue = if (modifiedCol >= 0 && !cursor.isNull(modifiedCol)) cursor.getLong(modifiedCol) else 0L
+                    val cached = if (!isDir) readCachedLibraryMetadata(childUri, sizeValue, modifiedValue) else null
                     result.add(LibraryEntry(
                         childUri, name, isDir, mime,
-                        if (sizeCol >= 0 && !cursor.isNull(sizeCol)) cursor.getLong(sizeCol) else 0L,
-                        if (modifiedCol >= 0 && !cursor.isNull(modifiedCol)) cursor.getLong(modifiedCol) else 0L,
-                        duration, bpmValue
+                        sizeValue,
+                        modifiedValue,
+                        cached?.durationMs,
+                        cached?.bpm,
+                        isDir || cached != null
                     ))
                 }
             }
@@ -600,7 +752,7 @@ class MainActivity : AppCompatActivity() {
             val n = it.read(data)
             if (n <= 0) return null
             val text = String(data, 0, n, Charsets.ISO_8859_1)
-            return Regex("(?i)$key[^0-9]{0,8}([0-9]{2,3}(?:\\.[0-9]+)?)").find(text)?.groupValues?.get(1)
+            return Regex("(?i)$key[^0-9]{0,8}([0-9]{2,3}(?:\.[0-9]+)?)").find(text)?.groupValues?.get(1)
                 ?.toDoubleOrNull()?.takeIf { v -> v in 20.0..300.0 }
         }
     }
@@ -757,7 +909,7 @@ class MainActivity : AppCompatActivity() {
                 loadFromLibrary(uri, uri.lastPathSegment?.substringAfterLast("/") ?: "Audio file")
             }
 
-        fun loadFromLibrary(uri: Uri, displayName: String = "Audio file") {
+        fun loadFromLibrary(uri: Uri, displayName: String = "Audio file", returnToMain: Boolean = false) {
             if (player.isPlaying) return
             loadedUri = uri
             detectedBpm = null
@@ -781,6 +933,9 @@ class MainActivity : AppCompatActivity() {
                 play.isEnabled = !deckLocked
                 cue.isEnabled = !deckLocked
                 seek.isEnabled = !deckLocked
+                if (returnToMain) {
+                    showMainScreen()
+                }
             }
         }
 
@@ -2544,6 +2699,8 @@ class MainActivity : AppCompatActivity() {
         if (::deckB.isInitialized) {
             deckB.release()
         }
+
+        libraryMetadataExecutor.shutdownNow()
 
         super.onDestroy()
     }
