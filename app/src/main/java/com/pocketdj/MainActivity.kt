@@ -1,7 +1,6 @@
 package com.pocketdj
 
 import android.content.Intent
-import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -83,23 +82,9 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(root)
 
-        // Keep the app process alive for background audio playback.
-        startBackgroundPlaybackService()
-
+        // Keep audio running while the app is minimized or another app is opened.
+        // Audio focus is handled by ExoPlayer so PocketDJ remains the active music player.
         handler.post(displayRunnable)
-    }
-
-    private fun startBackgroundPlaybackService() {
-        try {
-            val intent = Intent(this, BackgroundPlaybackService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
-        } catch (_: Exception) {
-            // Playback can still work normally if the service cannot start.
-        }
     }
 
     private val displayRunnable = object : Runnable {
@@ -1023,6 +1008,7 @@ class MainActivity : AppCompatActivity() {
                 true
             )
 
+            player.setWakeMode(C.WAKE_MODE_LOCAL)
             player.volume = mixerVolume
 
             createUI(parent)
@@ -2312,13 +2298,10 @@ class MainActivity : AppCompatActivity() {
 
         handler.removeCallbacksAndMessages(null)
 
-        if (::deckA.isInitialized) {
-            deckA.release()
-        }
-
-        if (::deckB.isInitialized) {
-            deckB.release()
-        }
+        // Do not stop the players here. Android may destroy the Activity
+        // while the app is in the background; keeping the players alive
+        // allows audio to continue. The process can still be reclaimed by
+        // Android when memory is critically low.
 
         super.onDestroy()
     }
