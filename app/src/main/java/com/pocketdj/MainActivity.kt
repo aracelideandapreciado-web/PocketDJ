@@ -40,6 +40,7 @@ import kotlin.math.sin
 import kotlin.math.PI
 import kotlin.math.roundToInt
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 
 class MainActivity : AppCompatActivity() {
 
@@ -60,7 +61,11 @@ class MainActivity : AppCompatActivity() {
     private var librarySortMode = "A-Z"
     private val libraryFolderStack = ArrayList<Uri>()
     private var libraryRefreshToken = 0
+    private val libraryScanExecutor = Executors.newSingleThreadExecutor()
+    private var libraryScanFuture: Future<*>? = null
     private val libraryMetadataExecutor = Executors.newFixedThreadPool(3)
+    private val libraryMetadataFutures = mutableListOf<Future<*>>()
+    private var librarySearchDebounce: Runnable? = null
 
     private lateinit var mainRoot: LinearLayout
 
@@ -285,8 +290,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun cancelLibraryScan() {
+        libraryScanFuture?.cancel(true)
+        libraryScanFuture = null
+    }
+
+    private fun cancelLibraryMetadata() {
+        synchronized(libraryMetadataFutures) {
+            libraryMetadataFutures.forEach { it.cancel(true) }
+            libraryMetadataFutures.clear()
+        }
+    }
+
     private fun showMainScreen() {
         libraryVisible = false
+        libraryRefreshToken++
+        cancelLibraryScan()
+        cancelLibraryMetadata()
+        librarySearchDebounce?.let { handler.removeCallbacks(it) }
+        librarySearchDebounce = null
         setContentView(mainRoot)
     }
 
@@ -416,8 +438,10 @@ class MainActivity : AppCompatActivity() {
 
         fun refreshList() {
             val token = ++libraryRefreshToken
-            val filter = search.text.toString()
+            val filter = search.text.toString().trim()
             val sortMode = librarySortMode
+            cancelLibraryScan()
+            cancelLibraryMetadata()
             listContainer.removeAllViews()
             val scanning = TextView(this).apply {
                 text = "Scanning folder..."
@@ -427,16 +451,22 @@ class MainActivity : AppCompatActivity() {
             }
             listContainer.addView(scanning, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 80))
 
-            Thread {
-                val entries = sortLibraryEntries(queryLibraryEntries(treeUri, currentUri, filter), sortMode)
+            libraryScanFuture = libraryScanExecutor.submit {
+                if (Thread.currentThread().isInterrupted) return@submit
+                val rawEntries = queryLibraryEntries(treeUri, currentUri, filter)
+                if (Thread.currentThread().isInterrupted || token != libraryRefreshToken) return@submit
+                val entries = sortLibraryEntries(rawEntries, sortMode)
 
                 runOnUiThread {
                     if (!libraryVisible || token != libraryRefreshToken) return@runOnUiThread
                     renderLibraryEntries(entries, currentUri, listContainer, selectedLabel, ::updateDeckButtons, token)
                 }
 
-                enrichLibraryMetadataAsync(entries, token, currentUri, listContainer, selectedLabel, ::updateDeckButtons)
-            }.start()
+                val needsFullMetadata = sortMode == "BPM ↑" || sortMode == "BPM ↓" ||
+                    sortMode == "Duration ↑" || sortMode == "Duration ↓"
+                val metadataEntries = if (needsFullMetadata) entries else entries.take(100)
+                enrichLibraryMetadataAsync(metadataEntries, token, currentUri, listContainer, selectedLabel, ::updateDeckButtons)
+            }
         }
 
         val sortOptions = arrayOf("A-Z", "Z-A", "File Type", "BPM ↑", "BPM ↓", "Duration ↑", "Duration ↓")
@@ -449,7 +479,14 @@ class MainActivity : AppCompatActivity() {
 
         search.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { refreshList() }
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                librarySearchDebounce?.let { handler.removeCallbacks(it) }
+                val task = Runnable {
+                    if (libraryVisible) refreshList()
+                }
+                librarySearchDebounce = task
+                handler.postDelayed(task, 180L)
+            }
             override fun afterTextChanged(s: android.text.Editable?) {}
         })
 
@@ -482,56 +519,93 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        for (entry in entries) {
-            val row = makeMainButton(entry.displayName)
-            row.gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            row.text = if (entry.isDirectory) {
-                "📁 ${entry.displayName}"
-            } else {
-                val bpmText = entry.bpm?.let { "${formatLibraryBpm(it)} BPM" } ?: "-- BPM"
-                "🎵 ${entry.displayName}    $bpmText    ${entry.durationText}"
-            }
-            row.setTextColor(if (entry.isDirectory) Color.WHITE else Color.LTGRAY)
-            row.setBackgroundColor(
-                if (librarySelectedUri?.toString() == entry.uri.toString())
-                    Color.rgb(0, 90, 105)
-                else
-                    Color.rgb(30, 30, 30)
-            )
-            row.setOnClickListener {
-                if (entry.isDirectory) {
-                    libraryFolderStack.add(currentUri)
-                    libraryCurrentUri = entry.uri
-                    librarySelectedUri = null
-                    librarySelectedName = ""
-                    showLibrary()
+        val batchSize = 100
+
+        fun addBatch(startIndex: Int) {
+            if (!libraryVisible || token != libraryRefreshToken) return
+
+            val endIndex = minOf(startIndex + batchSize, entries.size)
+            for (index in startIndex until endIndex) {
+                val entry = entries[index]
+                val row = makeMainButton(entry.displayName)
+                row.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                row.text = if (entry.isDirectory) {
+                    "📁 ${entry.displayName}"
                 } else {
-                    librarySelectedUri = entry.uri
-                    librarySelectedName = entry.displayName
-                    selectedLabel.text = "Selected: ${entry.displayName}"
-                    for (i in 0 until listContainer.childCount) {
-                        val child = listContainer.getChildAt(i)
-                        val childEntry = child.tag as? LibraryEntry
-                        if (childEntry != null) {
-                            child.setBackgroundColor(
-                                if (childEntry.uri.toString() == entry.uri.toString())
-                                    Color.rgb(0, 90, 105)
-                                else
-                                    Color.rgb(30, 30, 30)
-                            )
-                        }
-                    }
-                    updateDeckButtons()
+                    val bpmText = entry.bpm?.let { "${formatLibraryBpm(it)} BPM" } ?: "-- BPM"
+                    "🎵 ${entry.displayName}    $bpmText    ${entry.durationText}"
                 }
+                row.setTextColor(if (entry.isDirectory) Color.WHITE else Color.LTGRAY)
+                row.setBackgroundColor(
+                    if (librarySelectedUri?.toString() == entry.uri.toString())
+                        Color.rgb(0, 90, 105)
+                    else
+                        Color.rgb(30, 30, 30)
+                )
+                row.setOnClickListener {
+                    if (entry.isDirectory) {
+                        libraryFolderStack.add(currentUri)
+                        libraryCurrentUri = entry.uri
+                        librarySelectedUri = null
+                        librarySelectedName = ""
+                        showLibrary()
+                    } else {
+                        librarySelectedUri = entry.uri
+                        librarySelectedName = entry.displayName
+                        selectedLabel.text = "Selected: ${entry.displayName}"
+                        for (i in 0 until listContainer.childCount) {
+                            val child = listContainer.getChildAt(i)
+                            val childEntry = child.tag as? LibraryEntry
+                            if (childEntry != null) {
+                                child.setBackgroundColor(
+                                    if (childEntry.uri.toString() == entry.uri.toString())
+                                        Color.rgb(0, 90, 105)
+                                    else
+                                        Color.rgb(30, 30, 30)
+                                )
+                            }
+                        }
+                        updateDeckButtons()
+                    }
+                }
+                row.tag = entry
+                listContainer.addView(
+                    row,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, 48
+                    ).apply { setMargins(2, 2, 2, 2) }
+                )
             }
-            row.tag = entry
-            listContainer.addView(
-                row,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, 48
-                ).apply { setMargins(2, 2, 2, 2) }
-            )
+
+            if (endIndex < entries.size) {
+                val remaining = entries.size - endIndex
+                val more = makeMainButton("LOAD MORE ($remaining)")
+                more.setOnClickListener {
+                    if (!libraryVisible || token != libraryRefreshToken) return@setOnClickListener
+                    listContainer.removeView(more)
+                    val nextEnd = minOf(endIndex + batchSize, entries.size)
+                    addBatch(endIndex)
+                    if (librarySortMode == "A-Z" || librarySortMode == "Z-A" || librarySortMode == "File Type") {
+                        enrichLibraryMetadataAsync(
+                            entries.subList(endIndex, nextEnd),
+                            token,
+                            currentUri,
+                            listContainer,
+                            selectedLabel,
+                            updateDeckButtons
+                        )
+                    }
+                }
+                listContainer.addView(
+                    more,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, 46
+                    ).apply { setMargins(2, 6, 2, 6) }
+                )
+            }
         }
+
+        addBatch(0)
         updateDeckButtons()
     }
 
@@ -560,19 +634,37 @@ class MainActivity : AppCompatActivity() {
         val lock = Any()
 
         for (entry in pending) {
-            libraryMetadataExecutor.execute {
-                var bpmValue: Double? = null
-                var durationValue: Long? = null
-                try {
-                    bpmValue = readBpmFromMetadataForLibrary(entry.uri)
-                } catch (_: Exception) {
-                }
-                try {
-                    durationValue = readDurationForLibrary(entry.uri)
-                } catch (_: Exception) {
+            val future = libraryMetadataExecutor.submit {
+                if (!libraryVisible || token != libraryRefreshToken || Thread.currentThread().isInterrupted) {
+                    synchronized(lock) { remaining-- }
+                    return@submit
                 }
 
-                saveLibraryMetadataCache(entry.uri, entry.size, entry.lastModified, bpmValue, durationValue)
+                var bpmValue: Double? = null
+                var durationValue: Long? = null
+                val cached = readCachedLibraryMetadata(entry.uri, entry.size, entry.lastModified)
+                if (cached != null) {
+                    bpmValue = cached.bpm
+                    durationValue = cached.durationMs
+                } else {
+                    try {
+                        bpmValue = readBpmFromMetadataForLibrary(entry.uri)
+                    } catch (_: Exception) {
+                    }
+                    if (!libraryVisible || token != libraryRefreshToken || Thread.currentThread().isInterrupted) {
+                    synchronized(lock) { remaining-- }
+                    return@submit
+                }
+                    try {
+                        durationValue = readDurationForLibrary(entry.uri)
+                    } catch (_: Exception) {
+                    }
+                    if (!libraryVisible || token != libraryRefreshToken || Thread.currentThread().isInterrupted) {
+                    synchronized(lock) { remaining-- }
+                    return@submit
+                }
+                    saveLibraryMetadataCache(entry.uri, entry.size, entry.lastModified, bpmValue, durationValue)
+                }
 
                 synchronized(lock) {
                     entry.bpm = bpmValue
@@ -601,6 +693,9 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+            synchronized(libraryMetadataFutures) {
+                libraryMetadataFutures.add(future)
+            }
         }
     }
 
@@ -610,7 +705,7 @@ class MainActivity : AppCompatActivity() {
         lastModified: Long
     ): LibraryMetadata? {
         val prefs = getSharedPreferences("pocketdj_library_cache", MODE_PRIVATE)
-        val base = "v24_${uri}_${size}_${lastModified}"
+        val base = "v26_${uri}_${size}_${lastModified}"
         if (!prefs.contains("$base.cached")) return null
         val bpmRaw = prefs.getString("$base.bpm", "NONE")
         val durationRaw = prefs.getLong("$base.duration", -1L)
@@ -628,7 +723,7 @@ class MainActivity : AppCompatActivity() {
         durationMs: Long?
     ) {
         val prefs = getSharedPreferences("pocketdj_library_cache", MODE_PRIVATE)
-        val base = "v24_${uri}_${size}_${lastModified}"
+        val base = "v26_${uri}_${size}_${lastModified}"
         prefs.edit()
             .putString("$base.bpm", bpm?.toString() ?: "NONE")
             .putLong("$base.duration", durationMs ?: -1L)
@@ -685,6 +780,7 @@ class MainActivity : AppCompatActivity() {
                 val sizeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
                 val modifiedCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
                 while (cursor.moveToNext()) {
+                    if (Thread.currentThread().isInterrupted) return@use
                     val id = cursor.getString(idCol) ?: continue
                     val name = cursor.getString(nameCol) ?: "Unnamed"
                     if (filter.isNotBlank() && !name.contains(filter, ignoreCase = true)) continue
@@ -694,15 +790,20 @@ class MainActivity : AppCompatActivity() {
                     val childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
                     val sizeValue = if (sizeCol >= 0 && !cursor.isNull(sizeCol)) cursor.getLong(sizeCol) else 0L
                     val modifiedValue = if (modifiedCol >= 0 && !cursor.isNull(modifiedCol)) cursor.getLong(modifiedCol) else 0L
-                    val cached = if (!isDir) readCachedLibraryMetadata(childUri, sizeValue, modifiedValue) else null
-                    result.add(LibraryEntry(
-                        childUri, name, isDir, mime,
-                        sizeValue,
-                        modifiedValue,
-                        cached?.durationMs,
-                        cached?.bpm,
-                        isDir || cached != null
-                    ))
+                    if (isDir) {
+                        result.add(LibraryEntry(
+                            childUri, name, true, mime,
+                            sizeValue, modifiedValue,
+                            null, null, true
+                        ))
+                    } else {
+                        val cached = readCachedLibraryMetadata(childUri, sizeValue, modifiedValue)
+                        result.add(LibraryEntry(
+                            childUri, name, false, mime,
+                            sizeValue, modifiedValue,
+                            cached?.durationMs, cached?.bpm, cached != null
+                        ))
+                    }
                 }
             }
         } catch (_: Exception) {
@@ -2700,6 +2801,11 @@ class MainActivity : AppCompatActivity() {
             deckB.release()
         }
 
+        cancelLibraryScan()
+        cancelLibraryMetadata()
+        librarySearchDebounce?.let { handler.removeCallbacks(it) }
+        librarySearchDebounce = null
+        libraryScanExecutor.shutdownNow()
         libraryMetadataExecutor.shutdownNow()
 
         super.onDestroy()
