@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.DocumentsContract
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -24,6 +25,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.ScrollView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.AudioAttributes
@@ -47,6 +49,38 @@ class MainActivity : AppCompatActivity() {
 
     private var masterVolume = 1f
     private var limiterEnabled = true
+
+    private var libraryVisible = false
+    private var libraryTreeUri: Uri? = null
+    private var libraryCurrentUri: Uri? = null
+    private var librarySelectedUri: Uri? = null
+    private var librarySelectedName = ""
+    private var librarySelectedDeck = "A"
+    private var librarySortMode = "A-Z"
+    private val libraryFolderStack = ArrayList<Uri>()
+    private var libraryRefreshToken = 0
+
+    private lateinit var mainRoot: LinearLayout
+
+    private val libraryFolderPicker =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
+            if (uri == null) return@registerForActivityResult
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {
+            }
+            libraryTreeUri = uri
+            libraryCurrentUri = uri
+            libraryFolderStack.clear()
+            getSharedPreferences("pocketdj", MODE_PRIVATE)
+                .edit()
+                .putString("library_tree_uri", uri.toString())
+                .apply()
+            showLibrary()
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,6 +114,7 @@ class MainActivity : AppCompatActivity() {
 
         addMixer(root)
 
+        mainRoot = root
         setContentView(root)
 
         handler.post(displayRunnable)
@@ -205,7 +240,400 @@ class MainActivity : AppCompatActivity() {
         ).apply {
             setMargins(0, 0, 0, 4)
         })
+
+        val libraryButton = makeMainButton("LIBRARY")
+        libraryButton.setOnClickListener { openLibrary() }
+        root.addView(libraryButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 48
+        ).apply {
+            setMargins(2, 6, 2, 4)
+        })
     }
+
+    private fun makeMainButton(text: String): Button = Button(this).apply {
+        this.text = text
+        textSize = 12f
+        isAllCaps = false
+        minHeight = 0
+        minimumHeight = 0
+        minWidth = 0
+        minimumWidth = 0
+        setPadding(2, 0, 2, 0)
+        setTextColor(Color.WHITE)
+        setBackgroundColor(Color.rgb(45, 45, 45))
+    }
+
+    private fun openLibrary() {
+        if (libraryTreeUri == null) {
+            val saved = getSharedPreferences("pocketdj", MODE_PRIVATE)
+                .getString("library_tree_uri", null)
+            if (saved != null) {
+                try {
+                    libraryTreeUri = Uri.parse(saved)
+                    libraryCurrentUri = libraryTreeUri
+                } catch (_: Exception) {
+                }
+            }
+        }
+        if (libraryTreeUri == null) {
+            libraryFolderPicker.launch(null)
+        } else {
+            libraryCurrentUri = libraryCurrentUri ?: libraryTreeUri
+            showLibrary()
+        }
+    }
+
+    private fun showMainScreen() {
+        libraryVisible = false
+        setContentView(mainRoot)
+    }
+
+    private fun showLibrary() {
+        val treeUri = libraryTreeUri ?: return
+        val currentUri = libraryCurrentUri ?: treeUri
+        libraryVisible = true
+
+        val screen = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(8, 6, 8, 6)
+            setBackgroundColor(Color.rgb(9, 9, 9))
+        }
+
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val back = makeMainButton("← BACK")
+        back.setOnClickListener {
+            if (currentUri.toString() == treeUri.toString()) {
+                showMainScreen()
+            } else if (libraryFolderStack.isNotEmpty()) {
+                libraryCurrentUri = libraryFolderStack.removeAt(libraryFolderStack.lastIndex)
+                showLibrary()
+            } else {
+                libraryCurrentUri = treeUri
+                showLibrary()
+            }
+        }
+        top.addView(back, LinearLayout.LayoutParams(90, 46))
+        val title = TextView(this).apply {
+            text = "LIBRARY"
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setTextColor(Color.CYAN)
+        }
+        top.addView(title, LinearLayout.LayoutParams(0, 46, 1f))
+        val folderButton = makeMainButton("FOLDER")
+        folderButton.setOnClickListener { libraryFolderPicker.launch(treeUri) }
+        top.addView(folderButton, LinearLayout.LayoutParams(90, 46))
+        screen.addView(top)
+
+        val search = android.widget.EditText(this).apply {
+            hint = "Search tracks..."
+            textSize = 13f
+            setSingleLine(true)
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+            setBackgroundColor(Color.rgb(30, 30, 30))
+            setPadding(12, 0, 12, 0)
+        }
+        screen.addView(search, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 44
+        ).apply { setMargins(2, 6, 2, 4) })
+
+        val deckRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val deckLabel = TextView(this).apply {
+            text = "LOAD TO:"
+            textSize = 11f
+            setTextColor(Color.GRAY)
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        deckRow.addView(deckLabel, LinearLayout.LayoutParams(75, 42))
+        val deckAButton = makeMainButton("DECK A")
+        val deckBButton = makeMainButton("DECK B")
+        deckRow.addView(deckAButton, LinearLayout.LayoutParams(0, 42, 1f).apply { setMargins(2, 0, 2, 0) })
+        deckRow.addView(deckBButton, LinearLayout.LayoutParams(0, 42, 1f).apply { setMargins(2, 0, 2, 0) })
+        screen.addView(deckRow)
+
+        val sortRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val sortLabel = TextView(this).apply {
+            text = "SORT:"
+            textSize = 11f
+            setTextColor(Color.GRAY)
+        }
+        sortRow.addView(sortLabel, LinearLayout.LayoutParams(50, 42))
+        val sortButton = makeMainButton(librarySortMode)
+        sortRow.addView(sortButton, LinearLayout.LayoutParams(0, 42, 1f))
+        screen.addView(sortRow)
+
+        val listContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val scroll = ScrollView(this)
+        scroll.addView(listContainer)
+        screen.addView(scroll, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        ).apply { setMargins(0, 6, 0, 4) })
+
+        val selectedLabel = TextView(this).apply {
+            text = if (librarySelectedUri != null) "Selected: $librarySelectedName" else "Selected: none"
+            textSize = 11f
+            setTextColor(Color.GRAY)
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        screen.addView(selectedLabel, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 28
+        ))
+
+        val loadButton = makeMainButton("LOAD TO DECK A")
+        screen.addView(loadButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 50
+        ).apply { setMargins(2, 2, 2, 4) })
+
+        fun updateDeckButtons() {
+            deckAButton.setBackgroundColor(if (librarySelectedDeck == "A") Color.rgb(0, 130, 150) else Color.rgb(45, 45, 45))
+            deckBButton.setBackgroundColor(if (librarySelectedDeck == "B") Color.rgb(0, 130, 150) else Color.rgb(45, 45, 45))
+            loadButton.text = "LOAD TO DECK ${librarySelectedDeck}"
+            val selectedDeckPlaying = if (librarySelectedDeck == "A") deckA.playerIsPlaying() else deckB.playerIsPlaying()
+            loadButton.isEnabled = librarySelectedUri != null && !selectedDeckPlaying
+            loadButton.alpha = if (loadButton.isEnabled) 1f else 0.45f
+        }
+
+        deckAButton.setOnClickListener { librarySelectedDeck = "A"; updateDeckButtons() }
+        deckBButton.setOnClickListener { librarySelectedDeck = "B"; updateDeckButtons() }
+        loadButton.setOnClickListener {
+            val uri = librarySelectedUri ?: return@setOnClickListener
+            val deck = if (librarySelectedDeck == "A") deckA else deckB
+            if (deck.playerIsPlaying()) return@setOnClickListener
+            deck.loadFromLibrary(uri, librarySelectedName)
+        }
+
+        fun refreshList() {
+            val token = ++libraryRefreshToken
+            val filter = search.text.toString()
+            val sortMode = librarySortMode
+            listContainer.removeAllViews()
+            val scanning = TextView(this).apply {
+                text = "Scanning folder..."
+                textSize = 12f
+                setTextColor(Color.GRAY)
+                gravity = Gravity.CENTER
+            }
+            listContainer.addView(scanning, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 80))
+
+            Thread {
+                val entries = sortLibraryEntries(queryLibraryEntries(treeUri, currentUri, filter), sortMode)
+                runOnUiThread {
+                    if (!libraryVisible || token != libraryRefreshToken) return@runOnUiThread
+                    listContainer.removeAllViews()
+                    if (entries.isEmpty()) {
+                        val empty = TextView(this).apply {
+                            text = "No audio files or folders"
+                            textSize = 12f
+                            setTextColor(Color.GRAY)
+                            gravity = Gravity.CENTER
+                        }
+                        listContainer.addView(empty, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 80))
+                    }
+                    for (entry in entries) {
+                        val row = makeMainButton(entry.displayName)
+                        row.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                        row.text = if (entry.isDirectory) {
+                            "📁 ${entry.displayName}"
+                        } else {
+                            val bpmText = entry.bpm?.let { "${formatLibraryBpm(it)} BPM" } ?: "-- BPM"
+                            "🎵 ${entry.displayName}    $bpmText    ${entry.durationText}"
+                        }
+                        row.setTextColor(if (entry.isDirectory) Color.WHITE else Color.LTGRAY)
+                        row.setBackgroundColor(if (librarySelectedUri?.toString() == entry.uri.toString()) Color.rgb(0, 90, 105) else Color.rgb(30, 30, 30))
+                        row.setOnClickListener {
+                            if (entry.isDirectory) {
+                                libraryFolderStack.add(currentUri)
+                                libraryCurrentUri = entry.uri
+                                librarySelectedUri = null
+                                librarySelectedName = ""
+                                showLibrary()
+                            } else {
+                                librarySelectedUri = entry.uri
+                                librarySelectedName = entry.displayName
+                                selectedLabel.text = "Selected: ${entry.displayName}"
+                                updateDeckButtons()
+                                refreshList()
+                            }
+                        }
+                        listContainer.addView(row, LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT, 48
+                        ).apply { setMargins(2, 2, 2, 2) })
+                    }
+                    updateDeckButtons()
+                }
+            }.start()
+        }
+
+        val sortOptions = arrayOf("A-Z", "Z-A", "File Type", "BPM ↑", "BPM ↓", "Duration ↑", "Duration ↓")
+        sortButton.setOnClickListener {
+            val index = sortOptions.indexOf(librarySortMode).coerceAtLeast(0)
+            librarySortMode = sortOptions[(index + 1) % sortOptions.size]
+            sortButton.text = librarySortMode
+            refreshList()
+        }
+
+        search.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { refreshList() }
+            override fun afterTextChanged(s: android.text.Editable?) {}
+        })
+
+        updateDeckButtons()
+        refreshList()
+        setContentView(screen)
+    }
+
+    private data class LibraryEntry(
+        val uri: Uri,
+        val displayName: String,
+        val isDirectory: Boolean,
+        val mimeType: String,
+        val size: Long,
+        val lastModified: Long,
+        val durationMs: Long?,
+        val bpm: Double?
+    ) {
+        val durationText: String
+            get() {
+                val ms = durationMs ?: return "--:--"
+                val totalSeconds = (ms / 1000L).coerceAtLeast(0L)
+                return "%02d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
+            }
+    }
+
+    private fun queryLibraryEntries(treeUri: Uri, folderUri: Uri, filter: String): List<LibraryEntry> {
+        val documentId = try {
+            DocumentsContract.getDocumentId(folderUri)
+        } catch (_: Exception) {
+            try { DocumentsContract.getTreeDocumentId(folderUri) } catch (_: Exception) { return emptyList() }
+        }
+        val childrenUri = try {
+            DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId)
+        } catch (_: Exception) { return emptyList() }
+        val result = ArrayList<LibraryEntry>()
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED
+        )
+        try {
+            contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+                val idCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                val sizeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+                val modifiedCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                while (cursor.moveToNext()) {
+                    val id = cursor.getString(idCol) ?: continue
+                    val name = cursor.getString(nameCol) ?: "Unnamed"
+                    if (filter.isNotBlank() && !name.contains(filter, ignoreCase = true)) continue
+                    val mime = cursor.getString(mimeCol) ?: ""
+                    val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
+                    if (!isDir && !isSupportedAudioName(name)) continue
+                    val childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
+                    val bpmValue = if (!isDir) readBpmFromMetadataForLibrary(childUri) else null
+                    val duration = if (!isDir) readDurationForLibrary(childUri) else null
+                    result.add(LibraryEntry(
+                        childUri, name, isDir, mime,
+                        if (sizeCol >= 0 && !cursor.isNull(sizeCol)) cursor.getLong(sizeCol) else 0L,
+                        if (modifiedCol >= 0 && !cursor.isNull(modifiedCol)) cursor.getLong(modifiedCol) else 0L,
+                        duration, bpmValue
+                    ))
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return result
+    }
+
+    private fun isSupportedAudioName(name: String): Boolean {
+        val n = name.lowercase()
+        return n.endsWith(".wav") || n.endsWith(".aiff") || n.endsWith(".aif") || n.endsWith(".aifc") ||
+            n.endsWith(".mp3") || n.endsWith(".flac") || n.endsWith(".m4a") || n.endsWith(".ogg")
+    }
+
+    private fun readBpmFromMetadataForLibrary(uri: Uri): Double? {
+        return try {
+            val name = uri.lastPathSegment?.lowercase() ?: ""
+            when {
+                name.endsWith(".mp3") -> readTextBpm(uri, "TBPM")
+                name.endsWith(".flac") || name.endsWith(".ogg") -> readTextBpm(uri, "BPM") ?: readTextBpm(uri, "TBPM")
+                name.endsWith(".m4a") -> readSimpleMp4Bpm(uri)
+                else -> readTextBpm(uri, "BPM")
+            }
+        } catch (_: Exception) { null }
+    }
+
+    private fun readSimpleMp4Bpm(uri: Uri): Double? {
+        val input = contentResolver.openInputStream(uri) ?: return null
+        input.use {
+            val data = ByteArray(512 * 1024)
+            val n = it.read(data)
+            if (n <= 0) return null
+            for (i in 0 until (n - 6).coerceAtLeast(0)) {
+                if (data[i].toInt().toChar() == 't' && data[i + 1].toInt().toChar() == 'm' &&
+                    data[i + 2].toInt().toChar() == 'p' && data[i + 3].toInt().toChar() == 'o') {
+                    val v = ((data[i + 4].toInt() and 0xFF) shl 8) or (data[i + 5].toInt() and 0xFF)
+                    if (v in 20..300) return v.toDouble()
+                }
+            }
+        }
+        return null
+    }
+
+    private fun readTextBpm(uri: Uri, key: String): Double? {
+        val input = contentResolver.openInputStream(uri) ?: return null
+        input.use {
+            val data = ByteArray(512 * 1024)
+            val n = it.read(data)
+            if (n <= 0) return null
+            val text = String(data, 0, n, Charsets.ISO_8859_1)
+            return Regex("(?i)$key[^0-9]{0,8}([0-9]{2,3}(?:\.[0-9]+)?)").find(text)?.groupValues?.get(1)
+                ?.toDoubleOrNull()?.takeIf { v -> v in 20.0..300.0 }
+        }
+    }
+
+    private fun readDurationForLibrary(uri: Uri): Long? {
+        return try {
+            val retriever = android.media.MediaMetadataRetriever()
+            retriever.setDataSource(this, uri)
+            val text = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+            retriever.release()
+            text?.toLongOrNull()
+        } catch (_: Exception) { null }
+    }
+
+    private fun formatLibraryBpm(value: Double): String =
+        if (abs(value - value.roundToInt()) < 0.05) value.roundToInt().toString() else String.format("%.1f", value)
+
+    private fun sortLibraryEntries(entries: List<LibraryEntry>, mode: String): List<LibraryEntry> {
+        val folders = entries.filter { it.isDirectory }.sortedBy { it.displayName.lowercase() }
+        val files = entries.filter { !it.isDirectory }
+        val sortedFiles = when (mode) {
+            "Z-A" -> files.sortedByDescending { it.displayName.lowercase() }
+            "File Type" -> files.sortedWith(compareBy<LibraryEntry> { fileExtension(it.displayName) }.thenBy { it.displayName.lowercase() })
+            "BPM ↑" -> files.sortedWith(compareBy<LibraryEntry> { it.bpm ?: Double.POSITIVE_INFINITY }.thenBy { it.displayName.lowercase() })
+            "BPM ↓" -> files.sortedWith(compareByDescending<LibraryEntry> { it.bpm ?: Double.NEGATIVE_INFINITY }.thenBy { it.displayName.lowercase() })
+            "Duration ↑" -> files.sortedWith(compareBy<LibraryEntry> { it.durationMs ?: Long.MAX_VALUE }.thenBy { it.displayName.lowercase() })
+            "Duration ↓" -> files.sortedWith(compareByDescending<LibraryEntry> { it.durationMs ?: Long.MIN_VALUE }.thenBy { it.displayName.lowercase() })
+            else -> files.sortedBy { it.displayName.lowercase() }
+        }
+        return folders + sortedFiles
+    }
+
+    private fun fileExtension(name: String): String = name.substringAfterLast('.', "").lowercase()
 
     inner class Deck(
         private val name: String,
@@ -315,66 +743,46 @@ class MainActivity : AppCompatActivity() {
         private val lockButton =
             Button(this@MainActivity)
 
+        private lateinit var loadButtonUi: Button
+
         private val picker =
             registerForActivityResult(
                 ActivityResultContracts.OpenDocument()
             ) { uri: Uri? ->
-
                 if (uri == null) return@registerForActivityResult
-
                 try {
-                    contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    )
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 } catch (_: Exception) {
                 }
-
-                loadedUri = uri
-                detectedBpm = null
-                bpm.text = "BPM --"
-                readBpmFromMetadataAsync(uri)
-
-                player.stop()
-                waveform.reset()
-                play.text = "LOADING"
-                play.isEnabled = false
-                cue.isEnabled = false
-                seek.isEnabled = false
-
-                val displayName =
-                    uri.lastPathSegment
-                        ?.substringAfterLast("/")
-                        ?: "Audio file"
-
-                trackName.text = displayName
-                cuePosition = 0L
-
-                /*
-                 * Android/Media3 does not provide reliable direct AIFF
-                 * container playback on all devices. Convert PCM AIFF
-                 * to a temporary WAV file while preserving the original
-                 * sample rate, channels and bit depth.
-                 */
-                preparePlayableUri(uri) { playableUri ->
-                    loadedUri = playableUri
-
-                    player.setMediaItem(
-                        MediaItem.fromUri(playableUri)
-                    )
-                    player.prepare()
-
-                    waveform.loadAudio(playableUri)
-                    if (detectedBpm == null) {
-                        bpm.text = "BPM …"
-                        estimateBpmAsync(playableUri)
-                    }
-                    play.text = "PLAY"
-                    play.isEnabled = !deckLocked
-                    cue.isEnabled = !deckLocked
-                    seek.isEnabled = !deckLocked
-                }
+                loadFromLibrary(uri, uri.lastPathSegment?.substringAfterLast("/") ?: "Audio file")
             }
+
+        fun loadFromLibrary(uri: Uri, displayName: String = "Audio file") {
+            if (player.isPlaying) return
+            loadedUri = uri
+            detectedBpm = null
+            bpm.text = "BPM --"
+            readBpmFromMetadataAsync(uri)
+            player.stop()
+            waveform.reset()
+            play.text = "LOADING"
+            play.isEnabled = false
+            cue.isEnabled = false
+            seek.isEnabled = false
+            trackName.text = displayName
+            cuePosition = 0L
+            preparePlayableUri(uri) { playableUri ->
+                loadedUri = playableUri
+                player.setMediaItem(MediaItem.fromUri(playableUri))
+                player.prepare()
+                waveform.loadAudio(playableUri)
+                // V23: metadata only. No fallback BPM analysis.
+                play.text = "PLAY"
+                play.isEnabled = !deckLocked
+                cue.isEnabled = !deckLocked
+                seek.isEnabled = !deckLocked
+            }
+        }
 
         private fun readBpmFromMetadataAsync(uri: Uri) {
             Thread {
@@ -393,220 +801,6 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }.start()
-        }
-
-        private fun estimateBpmAsync(uri: Uri) {
-            Thread {
-                val value = try {
-                    estimateBpm(uri)
-                } catch (_: Exception) {
-                    null
-                }
-
-                bpm.post {
-                    if (detectedBpm == null && value != null) {
-                        detectedBpm = value
-                        bpm.text = "BPM ${formatBpm(value)}"
-                    } else if (detectedBpm == null) {
-                        bpm.text = "BPM --"
-                    }
-                }
-            }.start()
-        }
-
-        /*
-         * Lightweight fallback for tracks without BPM metadata.
-         * We inspect only a few short windows, preferably after the intro,
-         * then choose the tempo that repeats most consistently.
-         * This runs once in the background and never during playback.
-         */
-        private fun estimateBpm(uri: Uri): Double? {
-            val extractor = android.media.MediaExtractor()
-            var decoder: android.media.MediaCodec? = null
-            try {
-                val descriptor = contentResolver.openFileDescriptor(uri, "r") ?: return null
-                try {
-                    extractor.setDataSource(descriptor.fileDescriptor)
-                } finally {
-                    descriptor.close()
-                }
-
-                var trackIndex = -1
-                for (i in 0 until extractor.trackCount) {
-                    val f = extractor.getTrackFormat(i)
-                    val mime = f.getString(android.media.MediaFormat.KEY_MIME) ?: ""
-                    if (mime.startsWith("audio/")) { trackIndex = i; break }
-                }
-                if (trackIndex < 0) return null
-                extractor.selectTrack(trackIndex)
-                val format = extractor.getTrackFormat(trackIndex)
-                val mime = format.getString(android.media.MediaFormat.KEY_MIME) ?: return null
-                val durationUs = if (format.containsKey(android.media.MediaFormat.KEY_DURATION))
-                    format.getLong(android.media.MediaFormat.KEY_DURATION) else return null
-                if (durationUs < 8_000_000L) return null
-
-                val sampleRateHint = if (format.containsKey(android.media.MediaFormat.KEY_SAMPLE_RATE))
-                    format.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE) else 48_000
-
-                val starts = ArrayList<Long>()
-                val preferred = longArrayOf(30_000_000L, 60_000_000L, 120_000_000L, 240_000_000L)
-                for (start in preferred) if (start + 8_000_000L < durationUs) starts.add(start)
-                if (starts.isEmpty()) starts.add((durationUs / 2L).coerceAtLeast(0L))
-                val maxSamples = 4
-                while (starts.size > maxSamples) starts.removeAt(starts.lastIndex)
-
-                val estimates = ArrayList<Double>()
-                for (startUs in starts) {
-                    val estimate = estimateBpmWindow(extractor, mime, format, startUs, sampleRateHint)
-                    if (estimate != null) estimates.add(estimate)
-                }
-                if (estimates.isEmpty()) return null
-
-                // Quantize to quarter-BPM bins and prefer the cluster with the most agreement.
-                val clusters = estimates.groupBy { kotlin.math.round(it * 4.0) / 4.0 }
-                val best = clusters.entries.maxByOrNull { it.value.size }?.key ?: return null
-                val close = estimates.filter { kotlin.math.abs(it - best) <= 2.0 }
-                return if (close.size >= 2 || estimates.size == 1) close.average() else null
-            } finally {
-                try { decoder?.stop() } catch (_: Exception) {}
-                try { decoder?.release() } catch (_: Exception) {}
-                try { extractor.release() } catch (_: Exception) {}
-            }
-        }
-
-        private fun estimateBpmWindow(
-            extractor: android.media.MediaExtractor,
-            mime: String,
-            format: android.media.MediaFormat,
-            startUs: Long,
-            sampleRateHint: Int
-        ): Double? {
-            extractor.seekTo(startUs, android.media.MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-            val sampleRate = sampleRateHint.coerceIn(8_000, 96_000)
-            val envelopeRate = 100
-            val envelope = FloatArray(800)
-            var envelopeIndex = 0
-            var decoder: android.media.MediaCodec? = null
-
-            fun addPcm(buffer: java.nio.ByteBuffer, channels: Int) {
-                val bytesPerFrame = 2 * channels
-                if (bytesPerFrame <= 0) return
-                val framesPerBin = max(1, sampleRate / envelopeRate)
-                var sum = 0.0
-                var count = 0
-                while (buffer.remaining() >= bytesPerFrame && envelopeIndex < envelope.size) {
-                    var energy = 0f
-                    repeat(channels) {
-                        val lo = buffer.get().toInt() and 0xFF
-                        val hi = buffer.get().toInt()
-                        val sample = ((hi shl 8) or lo).toShort().toInt() / 32768f
-                        energy += abs(sample)
-                    }
-                    sum += energy / channels
-                    count++
-                    if (count >= framesPerBin) {
-                        envelope[envelopeIndex++] = (sum / count).toFloat()
-                        sum = 0.0
-                        count = 0
-                    }
-                }
-            }
-
-            try {
-                var channels = if (format.containsKey(android.media.MediaFormat.KEY_CHANNEL_COUNT))
-                    format.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1) else 2
-
-                if (mime == "audio/raw") {
-                    val endUs = startUs + 8_000_000L
-                    while (extractor.sampleTime < endUs && envelopeIndex < envelope.size) {
-                        val buffer = java.nio.ByteBuffer.allocateDirect(64 * 1024)
-                        val size = extractor.readSampleData(buffer, 0)
-                        if (size < 0) break
-                        buffer.limit(size)
-                        addPcm(buffer, channels)
-                        if (!extractor.advance()) break
-                    }
-                } else {
-                    decoder = android.media.MediaCodec.createDecoderByType(mime)
-                    decoder.configure(format, null, null, 0)
-                    decoder.start()
-                    val info = android.media.MediaCodec.BufferInfo()
-                    var inputDone = false
-                    var outputDone = false
-                    val endUs = startUs + 8_000_000L
-                    while (!outputDone && envelopeIndex < envelope.size) {
-                        if (!inputDone) {
-                            val inputIndex = decoder.dequeueInputBuffer(10_000L)
-                            if (inputIndex >= 0) {
-                                val input = decoder.getInputBuffer(inputIndex)
-                                if (input != null) {
-                                    input.clear()
-                                    val size = extractor.readSampleData(input, 0)
-                                    val time = extractor.sampleTime
-                                    if (size < 0 || time > endUs) {
-                                        decoder.queueInputBuffer(inputIndex, 0, 0, endUs,
-                                            android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                        inputDone = true
-                                    } else {
-                                        decoder.queueInputBuffer(inputIndex, 0, size, time, 0)
-                                        extractor.advance()
-                                    }
-                                }
-                            }
-                        }
-                        val outputIndex = decoder.dequeueOutputBuffer(info, 10_000L)
-                        when {
-                            outputIndex == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                                val out = decoder.outputFormat
-                                if (out.containsKey(android.media.MediaFormat.KEY_CHANNEL_COUNT))
-                                    channels = out.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
-                            }
-                            outputIndex >= 0 -> {
-                                val out = decoder.getOutputBuffer(outputIndex)
-                                if (out != null && info.size > 0) {
-                                    val start = info.offset.coerceIn(0, out.capacity())
-                                    val end = (info.offset + info.size).coerceIn(start, out.capacity())
-                                    out.position(start); out.limit(end)
-                                    addPcm(out, channels)
-                                }
-                                val eos = (info.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                                decoder.releaseOutputBuffer(outputIndex, false)
-                                if (eos) outputDone = true
-                            }
-                        }
-                    }
-                }
-
-                if (envelopeIndex < 120) return null
-                // Remove DC-like level and emphasize changes, which makes beat pulses clearer.
-                var mean = 0.0
-                for (i in 0 until envelopeIndex) mean += envelope[i]
-                mean /= envelopeIndex
-                for (i in 0 until envelopeIndex) envelope[i] = max(0f, envelope[i] - mean.toFloat())
-
-                var bestBpm = 0.0
-                var bestScore = Double.NEGATIVE_INFINITY
-                for (bpmCandidate in 70..180) {
-                    val lag = (envelopeRate * 60.0 / bpmCandidate).roundToInt()
-                    if (lag <= 0 || lag >= envelopeIndex / 2) continue
-                    var score = 0.0
-                    var count = 0
-                    var i = lag
-                    while (i < envelopeIndex) {
-                        score += envelope[i].toDouble() * envelope[i - lag].toDouble()
-                        count++
-                        i++
-                    }
-                    if (count > 0) {
-                        score /= count
-                        if (score > bestScore) { bestScore = score; bestBpm = bpmCandidate.toDouble() }
-                    }
-                }
-                return bestBpm.takeIf { it in 70.0..180.0 }
-            } finally {
-                try { decoder?.stop() } catch (_: Exception) {}
-                try { decoder?.release() } catch (_: Exception) {}
-            }
         }
 
         private fun formatBpm(value: Double): String {
@@ -1219,6 +1413,7 @@ class MainActivity : AppCompatActivity() {
 
             val load =
                 makeButton("LOAD")
+            loadButtonUi = load
 
             play.text = "PLAY"
             styleButton(play)
@@ -1304,7 +1499,7 @@ class MainActivity : AppCompatActivity() {
 
             load.setOnClickListener {
 
-                if (deckLocked) return@setOnClickListener
+                if (deckLocked || player.isPlaying) return@setOnClickListener
 
                 picker.launch(
                     arrayOf(
@@ -1508,6 +1703,8 @@ class MainActivity : AppCompatActivity() {
 
             panel.addView(controls)
 
+            load.isEnabled = !player.isPlaying && !deckLocked
+            load.alpha = if (load.isEnabled) 1f else 0.45f
             play.isEnabled = loadedUri != null
             cue.isEnabled = loadedUri != null
             seek.isEnabled = loadedUri != null
@@ -1904,6 +2101,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         fun updateDisplay() {
+
+            if (::loadButtonUi.isInitialized) {
+                loadButtonUi.isEnabled = !player.isPlaying && !deckLocked
+                loadButtonUi.alpha = if (loadButtonUi.isEnabled) 1f else 0.45f
+            }
 
             detectedBpm?.let { originalBpm ->
                 val liveBpm = originalBpm *
@@ -2320,6 +2522,14 @@ class MainActivity : AppCompatActivity() {
                 h,
                 paint
             )
+        }
+    }
+
+    override fun onBackPressed() {
+        if (libraryVisible) {
+            showMainScreen()
+        } else {
+            super.onBackPressed()
         }
     }
 
