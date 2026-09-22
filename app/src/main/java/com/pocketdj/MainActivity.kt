@@ -154,7 +154,7 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             if (::deckA.isInitialized) deckA.updateDisplay()
             if (::deckB.isInitialized) deckB.updateDisplay()
-            handler.postDelayed(this, 50)
+            handler.postDelayed(this, 100)
         }
     }
 
@@ -1645,10 +1645,14 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            startButton.textSize = 16f
+            startButton.setPadding(0, 0, 0, 0)
+            startButton.isAllCaps = false
+
             seekRow.addView(
                 startButton,
-                LinearLayout.LayoutParams(52, 32).apply {
-                    setMargins(2, 0, 4, 0)
+                LinearLayout.LayoutParams(68, 40).apply {
+                    setMargins(2, 0, 6, 0)
                 }
             )
 
@@ -2489,6 +2493,10 @@ class MainActivity : AppCompatActivity() {
             invalidate()
 
             Thread {
+                try {
+                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+                } catch (_: Exception) {
+                }
 
                 val result =
                     try {
