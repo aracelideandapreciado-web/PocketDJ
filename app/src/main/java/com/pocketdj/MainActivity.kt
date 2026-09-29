@@ -908,6 +908,7 @@ class MainActivity : AppCompatActivity() {
         private var baseSpeed = 1f
         private var bendAmount = 0f
         private var bassCutEnabled = false
+        private var hiCutEnabled = false
         private var equalizer: Equalizer? = null
         private var originalBassLevels = ShortArray(0)
         private var deckLocked = false
@@ -942,9 +943,6 @@ class MainActivity : AppCompatActivity() {
         private val seek =
             SeekBar(this@MainActivity)
 
-        private val startButton =
-            Button(this@MainActivity)
-
         private val speed =
             SeekBar(this@MainActivity)
 
@@ -958,6 +956,9 @@ class MainActivity : AppCompatActivity() {
             Button(this@MainActivity)
 
         private val bass =
+            Button(this@MainActivity)
+
+        private val hiCut =
             Button(this@MainActivity)
 
         private val pitchReset =
@@ -1474,7 +1475,7 @@ class MainActivity : AppCompatActivity() {
             val panel =
                 LinearLayout(this@MainActivity).apply {
                     orientation = LinearLayout.VERTICAL
-                    setPadding(8, 3, 8, 3)
+                    setPadding(8, 1, 8, 1)
                     setBackgroundColor(
                         Color.rgb(22, 22, 22)
                     )
@@ -1492,7 +1493,7 @@ class MainActivity : AppCompatActivity() {
                 heading,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    27
+                    23
                 )
             )
 
@@ -1507,7 +1508,7 @@ class MainActivity : AppCompatActivity() {
                 trackName,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    24
+                    20
                 )
             )
 
@@ -1539,7 +1540,7 @@ class MainActivity : AppCompatActivity() {
             }
             bpmRow.addView(
                 bpm,
-                LinearLayout.LayoutParams(0, 32, 1f)
+                LinearLayout.LayoutParams(0, 28, 1f)
             )
             bpmRow.addView(
                 bpmEditButton,
@@ -1549,7 +1550,7 @@ class MainActivity : AppCompatActivity() {
             )
             panel.addView(
                 bpmRow,
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 32)
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 27)
             )
 
             bpmEditButton.isEnabled = false
@@ -1611,7 +1612,7 @@ class MainActivity : AppCompatActivity() {
                 position,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    19
+                    16
                 )
             )
 
@@ -1662,41 +1663,9 @@ class MainActivity : AppCompatActivity() {
                     gravity = Gravity.CENTER_VERTICAL
                 }
 
-            startButton.text = "◀"
-            styleButton(startButton)
-            startButton.contentDescription = "Go to beginning"
-
-            startButton.setOnClickListener {
-                if (deckLocked || loadedUri == null) return@setOnClickListener
-
-                val wasPlaying = player.isPlaying
-
-
-                player.seekTo(0L)
-
-                if (wasPlaying) {
-                    player.play()
-                    play.text = "PAUSE"
-                } else {
-                    player.pause()
-                    play.text = "PLAY"
-                }
-            }
-
-            startButton.textSize = 16f
-            startButton.setPadding(0, 0, 0, 0)
-            startButton.isAllCaps = false
-
-            seekRow.addView(
-                startButton,
-                LinearLayout.LayoutParams(68, 40).apply {
-                    setMargins(2, 0, 6, 0)
-                }
-            )
-
             seekRow.addView(
                 seek,
-                LinearLayout.LayoutParams(0, 32, 1f)
+                LinearLayout.LayoutParams(0, 28, 1f)
             )
 
             panel.addView(seekRow)
@@ -1721,6 +1690,9 @@ class MainActivity : AppCompatActivity() {
 
             bass.text = "BASS"
             styleButton(bass)
+
+            hiCut.text = "HI CUT"
+            styleButton(hiCut)
 
             lockButton.text = "LOCK"
             styleButton(lockButton)
@@ -1758,7 +1730,6 @@ class MainActivity : AppCompatActivity() {
                     play.isEnabled = false
                     cue.isEnabled = false
                     seek.isEnabled = false
-                    startButton.isEnabled = false
                     pitchRangeButton.isEnabled = false
                     bpmEditButton.isEnabled = false
                 } else {
@@ -1770,7 +1741,6 @@ class MainActivity : AppCompatActivity() {
                     play.isEnabled = loadedUri != null
                     cue.isEnabled = loadedUri != null
                     seek.isEnabled = loadedUri != null
-                    startButton.isEnabled = loadedUri != null
                     pitchRangeButton.isEnabled = !deckLocked
                     bpmEditButton.isEnabled = loadedUri != null
                 }
@@ -1821,6 +1791,17 @@ class MainActivity : AppCompatActivity() {
 
                     play.text = "PAUSE"
                 }
+            }
+
+            play.setOnLongClickListener {
+                if (deckLocked || loadedUri == null) return@setOnLongClickListener true
+
+                player.pause()
+                player.seekTo(0L)
+                cuePosition = 0L
+                play.text = "PLAY"
+                stopBackgroundPlaybackServiceIfIdle()
+                true
             }
 
             var cueHoldStartedPlayback = false
@@ -1915,7 +1896,7 @@ class MainActivity : AppCompatActivity() {
             bass.setOnClickListener {
 
                 bassCutEnabled = !bassCutEnabled
-                applyBassCut()
+                applyFilters()
 
                 if (bassCutEnabled) {
 
@@ -1935,49 +1916,76 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            hiCut.setOnClickListener {
+
+                hiCutEnabled = !hiCutEnabled
+                applyFilters()
+
+                if (hiCutEnabled) {
+                    hiCut.setTextColor(Color.BLACK)
+                    hiCut.setBackgroundColor(
+                        Color.rgb(255, 190, 0)
+                    )
+                } else {
+                    hiCut.setTextColor(Color.WHITE)
+                    hiCut.setBackgroundColor(
+                        Color.rgb(45, 45, 45)
+                    )
+                }
+            }
+
             controls.addView(
                 load,
                 LinearLayout.LayoutParams(
                     0,
-                    56,
+                    50,
                     1f
-                ).apply { setMargins(2, 2, 2, 2) }
+                ).apply { setMargins(1, 1, 1, 1) }
             )
 
             controls.addView(
                 play,
                 LinearLayout.LayoutParams(
                     0,
-                    56,
+                    50,
                     1f
-                ).apply { setMargins(2, 2, 2, 2) }
+                ).apply { setMargins(1, 1, 1, 1) }
             )
 
             controls.addView(
                 cue,
                 LinearLayout.LayoutParams(
                     0,
-                    56,
+                    50,
                     1f
-                ).apply { setMargins(2, 2, 2, 2) }
+                ).apply { setMargins(1, 1, 1, 1) }
             )
 
             controls.addView(
                 lockButton,
                 LinearLayout.LayoutParams(
                     0,
-                    56,
+                    50,
                     1f
-                ).apply { setMargins(2, 2, 2, 2) }
+                ).apply { setMargins(1, 1, 1, 1) }
             )
 
             controls.addView(
                 bass,
                 LinearLayout.LayoutParams(
                     0,
-                    56,
+                    50,
                     1f
-                ).apply { setMargins(2, 2, 2, 2) }
+                ).apply { setMargins(1, 1, 1, 1) }
+            )
+
+            controls.addView(
+                hiCut,
+                LinearLayout.LayoutParams(
+                    0,
+                    50,
+                    1f
+                ).apply { setMargins(1, 1, 1, 1) }
             )
 
             panel.addView(controls)
@@ -1987,7 +1995,6 @@ class MainActivity : AppCompatActivity() {
             play.isEnabled = loadedUri != null
             cue.isEnabled = loadedUri != null
             seek.isEnabled = loadedUri != null
-            startButton.isEnabled = loadedUri != null
             pitchRangeButton.isEnabled = !deckLocked
             bpmEditButton.isEnabled = loadedUri != null && !deckLocked
 
@@ -2002,7 +2009,7 @@ class MainActivity : AppCompatActivity() {
                 pitchTitle,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    17
+                    14
                 )
             )
 
@@ -2114,41 +2121,41 @@ class MainActivity : AppCompatActivity() {
                 bendDown,
                 LinearLayout.LayoutParams(
                     62,
-                    52
-                ).apply { setMargins(2, 2, 4, 2) }
+                    46
+                ).apply { setMargins(1, 1, 3, 1) }
             )
 
             pitchRow.addView(
                 pitchRangeButton,
                 LinearLayout.LayoutParams(
                     62,
-                    52
-                ).apply { setMargins(2, 2, 6, 2) }
+                    46
+                ).apply { setMargins(1, 1, 4, 1) }
             )
 
             pitchRow.addView(
                 speed,
                 LinearLayout.LayoutParams(
                     0,
-                    52,
+                    46,
                     1f
-                ).apply { setMargins(0, 2, 0, 2) }
+                ).apply { setMargins(0, 1, 0, 1) }
             )
 
             pitchRow.addView(
                 pitchReset,
                 LinearLayout.LayoutParams(
                     76,
-                    52
-                ).apply { setMargins(8, 2, 6, 2) }
+                    46
+                ).apply { setMargins(5, 1, 4, 1) }
             )
 
             pitchRow.addView(
                 bendUp,
                 LinearLayout.LayoutParams(
                     62,
-                    52
-                ).apply { setMargins(6, 2, 2, 2) }
+                    46
+                ).apply { setMargins(4, 1, 1, 1) }
             )
 
             panel.addView(pitchRow)
@@ -2164,7 +2171,7 @@ class MainActivity : AppCompatActivity() {
                 pitchPercent,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    17
+                    14
                 )
             )
 
@@ -2179,7 +2186,7 @@ class MainActivity : AppCompatActivity() {
                 volumeTitle,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    17
+                    14
                 )
             )
 
@@ -2218,7 +2225,7 @@ class MainActivity : AppCompatActivity() {
                 volume,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    32
+                    28
                 )
             )
 
@@ -2229,7 +2236,7 @@ class MainActivity : AppCompatActivity() {
                     0,
                     1f
                 ).apply {
-                    setMargins(0, 2, 0, 2)
+                    setMargins(0, 1, 0, 1)
                 }
             )
         }
@@ -2280,14 +2287,14 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        private fun applyBassCut() {
+        private fun applyFilters() {
 
             try {
                 if (equalizer == null) {
                     val sessionId = player.audioSessionId
 
                     if (sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0) {
-                        handler.postDelayed({ applyBassCut() }, 200)
+                        handler.postDelayed({ applyFilters() }, 200)
                         return
                     }
 
@@ -2308,7 +2315,7 @@ class MainActivity : AppCompatActivity() {
                 val eq = equalizer ?: return
                 val range = eq.bandLevelRange
                 val minimumLevel = range[0]
-                val bassCutLevel = max(
+                val cutLevel = max(
                     minimumLevel.toInt(),
                     -1200
                 ).toShort()
@@ -2317,11 +2324,19 @@ class MainActivity : AppCompatActivity() {
                     val band = i.toShort()
                     val frequencyHz =
                         eq.getCenterFreq(band).toLong() / 1000L
+                    val original =
+                        if (i < originalBassLevels.size) originalBassLevels[i] else 0
 
-                    if (bassCutEnabled && frequencyHz <= 250L) {
-                        eq.setBandLevel(band, bassCutLevel)
-                    } else if (i < originalBassLevels.size) {
-                        eq.setBandLevel(band, originalBassLevels[i])
+                    when {
+                        bassCutEnabled && frequencyHz <= 250L -> {
+                            eq.setBandLevel(band, cutLevel)
+                        }
+                        hiCutEnabled && frequencyHz >= 4000L -> {
+                            eq.setBandLevel(band, cutLevel)
+                        }
+                        else -> {
+                            eq.setBandLevel(band, original)
+                        }
                     }
                 }
 
