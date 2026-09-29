@@ -911,39 +911,11 @@ class MainActivity : AppCompatActivity() {
         private var equalizer: Equalizer? = null
         private var originalBassLevels = ShortArray(0)
         private var deckLocked = false
-        private var reverseMode = false
-        private var reversePosition = 0L
-        private var reverseWasPlaying = false
+        private var pitchRangeIndex = 3
+        private val pitchRanges = floatArrayOf(6f, 10f, 16f, 50f)
+        private val pitchRangeLabels = arrayOf("±6%", "±10%", "±16%", "ABS")
         private var cueHeld = false
         private var cueTouchDown = false
-        private val reverseHandler = Handler(Looper.getMainLooper())
-        private val reverseStep = object : Runnable {
-            override fun run() {
-                if (!reverseMode || deckLocked || loadedUri == null) return
-
-                val reverseSpeed =
-                    min(2f, max(0.1f, baseSpeed + bendAmount))
-                val stepMs =
-                    (40L * reverseSpeed).toLong().coerceAtLeast(1L)
-
-                reversePosition =
-                    (reversePosition - stepMs).coerceAtLeast(0L)
-
-                player.seekTo(reversePosition)
-
-                if (reverseWasPlaying && !player.isPlaying) {
-                    player.play()
-                }
-
-                if (reversePosition <= 0L) {
-                    reverseMode = false
-                    reverse.text = "REV"
-                    return
-                }
-
-                reverseHandler.postDelayed(this, 40L)
-            }
-        }
 
         private var cuePosition = 0L
 
@@ -987,7 +959,7 @@ class MainActivity : AppCompatActivity() {
         private val pitchReset =
             Button(this@MainActivity)
 
-        private val reverse =
+        private val pitchRangeButton =
             Button(this@MainActivity)
 
         private val pitchPercent =
@@ -1630,9 +1602,6 @@ class MainActivity : AppCompatActivity() {
 
                 val wasPlaying = player.isPlaying
 
-                reverseMode = false
-                reverseHandler.removeCallbacks(reverseStep)
-                reverse.text = "REV"
 
                 player.seekTo(0L)
 
@@ -1690,39 +1659,21 @@ class MainActivity : AppCompatActivity() {
             pitchReset.text = "RESET"
             styleButton(pitchReset)
 
-            reverse.text = "REV"
-            styleButton(reverse)
+            pitchRangeButton.text = pitchRangeLabels[pitchRangeIndex]
+            styleButton(pitchRangeButton)
 
-            reverse.setOnClickListener {
+            pitchRangeButton.setOnClickListener {
+                if (deckLocked) return@setOnClickListener
 
-                if (deckLocked || loadedUri == null) return@setOnClickListener
-
-                if (reverseMode) {
-                    reverseMode = false
-                    reverseHandler.removeCallbacks(reverseStep)
-                    reverse.text = "REV"
-                    play.text = "PLAY"
-                    return@setOnClickListener
-                }
-
-                // Media3/ExoPlayer does not provide native reverse audio playback.
-                // REV therefore performs a reliable reverse scrub of the playhead.
-                // Keep our own position so repeated seekTo() calls cannot stall.
-                reversePosition = player.currentPosition.coerceAtLeast(0L)
-                reverseWasPlaying = player.isPlaying
-                reverseMode = true
-                reverse.text = "REV ◀"
-
-                if (reverseWasPlaying) {
-                    player.play()
-                    play.text = "PAUSE"
-                } else {
-                    player.pause()
-                    play.text = "PLAY"
-                }
-
-                reverseHandler.removeCallbacks(reverseStep)
-                reverseHandler.post(reverseStep)
+                val currentPercent = ((baseSpeed - 1f) * 100f).coerceIn(-50f, 50f)
+                pitchRangeIndex = (pitchRangeIndex + 1) % pitchRanges.size
+                val range = pitchRanges[pitchRangeIndex]
+                val limitedPercent = currentPercent.coerceIn(-range, range)
+                baseSpeed = 1f + (limitedPercent / 100f)
+                speed.progress = (((limitedPercent + range) / (range * 2f)) * 100f).roundToInt()
+                    .coerceIn(0, 100)
+                pitchRangeButton.text = pitchRangeLabels[pitchRangeIndex]
+                applySpeed()
             }
 
             lockButton.setOnClickListener {
@@ -1739,10 +1690,7 @@ class MainActivity : AppCompatActivity() {
                     cue.isEnabled = false
                     seek.isEnabled = false
                     startButton.isEnabled = false
-                    reverseMode = false
-                    reverseHandler.removeCallbacks(reverseStep)
-                    reverse.text = "REV"
-                    reverse.isEnabled = false
+                    pitchRangeButton.isEnabled = false
                 } else {
                     lockButton.text = "LOCK"
                     lockButton.setTextColor(Color.WHITE)
@@ -1753,7 +1701,7 @@ class MainActivity : AppCompatActivity() {
                     cue.isEnabled = loadedUri != null
                     seek.isEnabled = loadedUri != null
                     startButton.isEnabled = loadedUri != null
-                    reverse.isEnabled = loadedUri != null
+                    pitchRangeButton.isEnabled = !deckLocked
                 }
             }
 
@@ -1969,7 +1917,7 @@ class MainActivity : AppCompatActivity() {
             cue.isEnabled = loadedUri != null
             seek.isEnabled = loadedUri != null
             startButton.isEnabled = loadedUri != null
-            reverse.isEnabled = loadedUri != null
+            pitchRangeButton.isEnabled = !deckLocked
 
             val pitchTitle =
                 TextView(this@MainActivity).apply {
@@ -2013,9 +1961,10 @@ class MainActivity : AppCompatActivity() {
                         fromUser: Boolean
                     ) {
 
+                        val range = pitchRanges[pitchRangeIndex]
                         baseSpeed =
-                            0.5f +
-                                progress / 100f
+                            1f +
+                                ((progress / 100f) * (range * 2f) - range) / 100f
 
                         applySpeed()
                     }
@@ -2098,7 +2047,7 @@ class MainActivity : AppCompatActivity() {
             )
 
             pitchRow.addView(
-                reverse,
+                pitchRangeButton,
                 LinearLayout.LayoutParams(
                     62,
                     52
@@ -2447,8 +2396,6 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Exception) {
             }
             equalizer = null
-            reverseMode = false
-            reverseHandler.removeCallbacks(reverseStep)
             player.release()
         }
     }
