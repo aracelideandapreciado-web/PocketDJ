@@ -930,7 +930,11 @@ class MainActivity : AppCompatActivity() {
         private val bpm =
             TextView(this@MainActivity)
 
+        private val bpmEditButton =
+            Button(this@MainActivity)
+
         private var detectedBpm: Double? = null
+        private var bpmManuallySet = false
 
         private val waveform =
             WaveformView(this@MainActivity)
@@ -986,6 +990,7 @@ class MainActivity : AppCompatActivity() {
             if (player.isPlaying) return
             loadedUri = uri
             detectedBpm = null
+            bpmManuallySet = false
             bpm.text = "BPM --"
             readBpmFromMetadataAsync(uri)
             player.stop()
@@ -1006,6 +1011,7 @@ class MainActivity : AppCompatActivity() {
                 play.isEnabled = !deckLocked
                 cue.isEnabled = !deckLocked
                 seek.isEnabled = !deckLocked
+                bpmEditButton.isEnabled = !deckLocked
                 if (returnToMain) {
                     showMainScreen()
                 }
@@ -1021,11 +1027,13 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 bpm.post {
-                    detectedBpm = value
-                    bpm.text = if (value != null) {
-                        "BPM ${formatBpm(value)}"
-                    } else {
-                        "BPM --"
+                    if (!bpmManuallySet) {
+                        detectedBpm = value
+                        bpm.text = if (value != null) {
+                            "BPM ${formatBpm(value)}"
+                        } else {
+                            "BPM --"
+                        }
                     }
                 }
             }.start()
@@ -1507,17 +1515,78 @@ class MainActivity : AppCompatActivity() {
                 text = "BPM --"
                 textSize = 16f
                 setTextColor(Color.CYAN)
-                gravity = Gravity.CENTER
+                gravity = Gravity.CENTER_VERTICAL
                 translationY = -6f
             }
 
-            panel.addView(
+            bpmEditButton.apply {
+                text = "EDIT"
+                textSize = 10f
+                isAllCaps = false
+                minHeight = 0
+                minimumHeight = 0
+                minWidth = 0
+                minimumWidth = 0
+                setPadding(4, 0, 4, 0)
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.rgb(45, 45, 45))
+                contentDescription = "Edit BPM"
+            }
+
+            val bpmRow = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
+            bpmRow.addView(
                 bpm,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    25
-                )
+                LinearLayout.LayoutParams(0, 32, 1f)
             )
+            bpmRow.addView(
+                bpmEditButton,
+                LinearLayout.LayoutParams(58, 32).apply {
+                    setMargins(4, 0, 2, 0)
+                }
+            )
+            panel.addView(
+                bpmRow,
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 32)
+            )
+
+            bpmEditButton.isEnabled = false
+            bpmEditButton.setOnClickListener {
+                if (deckLocked || loadedUri == null) return@setOnClickListener
+
+                val input = android.widget.EditText(this@MainActivity).apply {
+                    inputType = android.text.InputType.TYPE_CLASS_NUMBER or
+                        android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                    setSingleLine(true)
+                    setText(detectedBpm?.let { formatBpm(it) } ?: "")
+                    selectAll()
+                    hint = "20 - 300"
+                }
+
+                val dialog = android.app.AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Set BPM")
+                    .setView(input)
+                    .setNegativeButton("CANCEL", null)
+                    .setPositiveButton("OK", null)
+                    .create()
+
+                dialog.setOnShowListener {
+                    dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                        val value = input.text.toString().trim().toDoubleOrNull()
+                        if (value == null || value !in 20.0..300.0) {
+                            input.error = "Enter BPM from 20 to 300"
+                            return@setOnClickListener
+                        }
+                        detectedBpm = value
+                        bpmManuallySet = true
+                        bpm.text = "BPM ${formatBpm(value)}"
+                        dialog.dismiss()
+                    }
+                }
+                dialog.show()
+            }
 
             waveform.setBackgroundColor(
                 Color.rgb(5, 5, 5)
@@ -1691,6 +1760,7 @@ class MainActivity : AppCompatActivity() {
                     seek.isEnabled = false
                     startButton.isEnabled = false
                     pitchRangeButton.isEnabled = false
+                    bpmEditButton.isEnabled = false
                 } else {
                     lockButton.text = "LOCK"
                     lockButton.setTextColor(Color.WHITE)
@@ -1702,6 +1772,7 @@ class MainActivity : AppCompatActivity() {
                     seek.isEnabled = loadedUri != null
                     startButton.isEnabled = loadedUri != null
                     pitchRangeButton.isEnabled = !deckLocked
+                    bpmEditButton.isEnabled = loadedUri != null
                 }
             }
 
@@ -1918,6 +1989,7 @@ class MainActivity : AppCompatActivity() {
             seek.isEnabled = loadedUri != null
             startButton.isEnabled = loadedUri != null
             pitchRangeButton.isEnabled = !deckLocked
+            bpmEditButton.isEnabled = loadedUri != null && !deckLocked
 
             val pitchTitle =
                 TextView(this@MainActivity).apply {
